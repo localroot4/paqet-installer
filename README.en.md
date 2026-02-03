@@ -71,6 +71,19 @@ The installer adds a cron line like:
 
 ```* * * * * /root/paqet-watchdog.sh ... ```
 
+Check crontab:
 
+crontab -l
+
+Safety notes
+
+If you see frequent “Killed”, you may be hitting OOM (out of memory).
+Solutions:
+
+Use a larger server
+
+Reduce other services
+
+Add swap (optional)
 
 
