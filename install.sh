@@ -26,6 +26,7 @@ set -Eeuo pipefail
 : "${SCREEN_NAME:=LR4-paqet}"
 : "${AUTO_START:=1}"
 : "${AUTO_ATTACH:=1}"
+: "${SKIP_PKG_INSTALL:=0}"
 : "${WATCHDOG:=1}"
 : "${WATCHDOG_METHOD:=auto}"  # auto | cron | systemd
 : "${FORCE_IPV6_DISABLE:=1}"
@@ -53,12 +54,15 @@ die()  { err "$*"; exit 1; }
 
 on_error() {
   local code=$?
+  local line="${1:-unknown}"
   err "Installer failed (exit code: $code)."
+  err "Failed command: ${BASH_COMMAND}"
+  err "At line: ${line}"
   err "Last 200 install log lines:"
   tail -n 200 "$LOG_INSTALL" 2>/dev/null || true
   exit "$code"
 }
-trap on_error ERR
+trap 'on_error $LINENO' ERR
 
 need_root() { [[ "${EUID}" -eq 0 ]] || die "Run as root. (sudo -i)"; }
 is_pipe_mode() { [[ ! -t 0 ]]; }
@@ -124,7 +128,9 @@ apt_fix_sources_if_needed() {
     sed -i 's#mirror\.hetzner\.com/ubuntu/packages#mirror.hetzner.com/ubuntu-ports/packages#g' /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null || true
     changed=1
   fi
-  [[ "$changed" -eq 1 ]] && warn "ARM detected; adjusted Hetzner sources to ubuntu-ports to avoid 404."
+  if [[ "$changed" -eq 1 ]]; then
+    warn "ARM detected; adjusted Hetzner sources to ubuntu-ports to avoid 404."
+  fi
 }
 
 apt_update_retry() {
@@ -148,6 +154,10 @@ apt_update_retry() {
 
 install_packages() {
   local mgr="$1"
+  if [[ -z "$mgr" ]]; then
+    warn "No supported package manager found; skipping dependency install."
+    return 0
+  fi
   case "$mgr" in
     apt-get)
       export DEBIAN_FRONTEND=noninteractive
@@ -183,7 +193,8 @@ install_packages() {
         2>&1 | tee -a "$LOG_INSTALL" >/dev/null
       ;;
     *)
-      die "No supported package manager found. Install dependencies manually: curl, wget, screen, iproute2, iputils/ping, perl, file, tar, procps/pgrep."
+      warn "Unsupported package manager: ${mgr}. Install dependencies manually: curl, wget, screen, iproute2, iputils/ping, perl, file, tar, procps/pgrep."
+      return 0
       ;;
   esac
   ok "Packages installed."
@@ -538,9 +549,18 @@ main() {
   fi
   ok "Inputs OK. (MODE=${MODE}, TUNNEL_PORT=${TUNNEL_PORT}, SERVICE_PORT=${SERVICE_PORT})"
 
-  local pkg_mgr
-  pkg_mgr="$(detect_pkg_manager)"
-  install_packages "$pkg_mgr"
+  local pkg_mgr detect_rc
+  log "Detecting package manager..."
+  set +e
+  pkg_mgr="$(detect_pkg_manager 2>/dev/null)"
+  detect_rc=$?
+  set -e
+  log "Detected package manager: ${pkg_mgr:-none} (rc=${detect_rc})"
+  if [[ "${SKIP_PKG_INSTALL}" == "1" ]]; then
+    warn "SKIP_PKG_INSTALL=1 (skipping dependency install)."
+  else
+    install_packages "$pkg_mgr"
+  fi
 
   local tarball; tarball="$(download_release_tarball)"
   extract_and_prepare_binary "$tarball"
