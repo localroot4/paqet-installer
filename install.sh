@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 ############################################
-# Paqet Auto Installer/Configurator (Ubuntu 22)
+# Paqet Auto Installer/Configurator (Linux)
 # - Keeps FULL original example YAML structure
 # - Copies example/*.yaml.example to /root/*.yaml
 # - Applies ONLY requested modifications
@@ -25,6 +25,7 @@ set -Eeuo pipefail
 : "${SECRET:=}"
 : "${SCREEN_NAME:=LR4-paqet}"
 : "${AUTO_START:=1}"
+: "${AUTO_ATTACH:=1}"
 : "${WATCHDOG:=1}"
 : "${WATCHDOG_METHOD:=auto}"  # auto | cron | systemd
 : "${FORCE_IPV6_DISABLE:=1}"
@@ -78,10 +79,10 @@ prompt() {
   local __var="$1" __text="$2" __def="${3:-}" __val=""
   has_tty || die "Interactive prompt requested but no TTY. Use ENV vars."
   if [[ -n "$__def" ]]; then
-    read -r -p "$__text [$__def]: " __val
+    read -r -p "$__text [$__def]: " __val || true
     __val="${__val:-$__def}"
   else
-    read -r -p "$__text: " __val
+    read -r -p "$__text: " __val || true
   fi
   printf -v "$__var" "%s" "$__val"
 }
@@ -101,7 +102,16 @@ detect_arch() {
 ARCH="$(detect_arch)"
 BIN_LOCAL="${ROOT_DIR}/paqet_linux_${ARCH}"
 
-# ===== APT resiliency (Hetzner ARM mirror 404 fix) =====
+# ===== Package manager helpers =====
+detect_pkg_manager() {
+  local mgr=""
+  for mgr in apt-get dnf yum apk pacman zypper; do
+    command -v "$mgr" >/dev/null 2>&1 && { echo "$mgr"; return 0; }
+  done
+  echo ""
+}
+
+# APT resiliency (Hetzner ARM mirror 404 fix)
 apt_fix_sources_if_needed() {
   [[ "$ARCH" == "arm64" || "$ARCH" == "armhf" ]] || return 0
 
@@ -136,13 +146,46 @@ apt_update_retry() {
   return 1
 }
 
-apt_install() {
-  export DEBIAN_FRONTEND=noninteractive
-  apt_fix_sources_if_needed
-  apt_update_retry || die "apt update failed. Check sources/network."
-  log "Installing packages: wget curl screen net-tools iproute2 ping libpcap-dev perl file..."
-  apt-get install -y wget curl ca-certificates screen net-tools iproute2 iputils-ping libpcap-dev perl file \
-    2>&1 | tee -a "$LOG_INSTALL" >/dev/null
+install_packages() {
+  local mgr="$1"
+  case "$mgr" in
+    apt-get)
+      export DEBIAN_FRONTEND=noninteractive
+      apt_fix_sources_if_needed
+      apt_update_retry || die "apt update failed. Check sources/network."
+      log "Installing packages (apt): wget curl screen net-tools iproute2 ping perl file tar procps..."
+      apt-get install -y wget curl ca-certificates screen net-tools iproute2 iputils-ping perl file tar procps \
+        2>&1 | tee -a "$LOG_INSTALL" >/dev/null
+      ;;
+    dnf)
+      log "Installing packages (dnf): wget curl screen net-tools iproute iputils perl file tar procps-ng..."
+      dnf -y install wget curl ca-certificates screen net-tools iproute iputils perl file tar procps-ng \
+        2>&1 | tee -a "$LOG_INSTALL" >/dev/null
+      ;;
+    yum)
+      log "Installing packages (yum): wget curl screen net-tools iproute iputils perl file tar procps-ng..."
+      yum -y install wget curl ca-certificates screen net-tools iproute iputils perl file tar procps-ng \
+        2>&1 | tee -a "$LOG_INSTALL" >/dev/null
+      ;;
+    apk)
+      log "Installing packages (apk): wget curl screen net-tools iproute2 iputils perl file tar procps..."
+      apk add --no-cache wget curl ca-certificates screen net-tools iproute2 iputils perl file tar procps \
+        2>&1 | tee -a "$LOG_INSTALL" >/dev/null
+      ;;
+    pacman)
+      log "Installing packages (pacman): wget curl screen net-tools iproute2 iputils perl file tar procps-ng..."
+      pacman -Sy --noconfirm wget curl ca-certificates screen net-tools iproute2 iputils perl file tar procps-ng \
+        2>&1 | tee -a "$LOG_INSTALL" >/dev/null
+      ;;
+    zypper)
+      log "Installing packages (zypper): wget curl screen net-tools iproute2 iputils perl file tar procps..."
+      zypper --non-interactive install wget curl ca-certificates screen net-tools iproute2 iputils perl file tar procps \
+        2>&1 | tee -a "$LOG_INSTALL" >/dev/null
+      ;;
+    *)
+      die "No supported package manager found. Install dependencies manually: curl, wget, screen, iproute2, iputils/ping, perl, file, tar, procps/pgrep."
+      ;;
+  esac
   ok "Packages installed."
 }
 
@@ -495,7 +538,9 @@ main() {
   fi
   ok "Inputs OK. (MODE=${MODE}, TUNNEL_PORT=${TUNNEL_PORT}, SERVICE_PORT=${SERVICE_PORT})"
 
-  apt_install
+  local pkg_mgr
+  pkg_mgr="$(detect_pkg_manager)"
+  install_packages "$pkg_mgr"
 
   local tarball; tarball="$(download_release_tarball)"
   extract_and_prepare_binary "$tarball"
@@ -549,6 +594,10 @@ main() {
     log "Attach      : screen -r ${SCREEN_NAME}"
     log "Runtime log : $LOG_RUNTIME"
     log "Watchdog log: $LOG_WATCHDOG"
+    if has_tty && [[ "${AUTO_ATTACH}" == "1" ]]; then
+      log "Auto-attaching to screen session: ${SCREEN_NAME}"
+      screen -r "${SCREEN_NAME}"
+    fi
     exit 0
   fi
 
@@ -581,5 +630,9 @@ main() {
   log "Attach      : screen -r ${SCREEN_NAME}"
   log "Runtime log : $LOG_RUNTIME"
   log "Watchdog log: $LOG_WATCHDOG"
+  if has_tty && [[ "${AUTO_ATTACH}" == "1" ]]; then
+    log "Auto-attaching to screen session: ${SCREEN_NAME}"
+    screen -r "${SCREEN_NAME}"
+  fi
 }
 main "$@"
