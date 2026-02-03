@@ -26,6 +26,7 @@ set -Eeuo pipefail
 : "${SCREEN_NAME:=LR4-paqet}"
 : "${AUTO_START:=1}"
 : "${AUTO_ATTACH:=1}"
+: "${SKIP_PKG_INSTALL:=0}"
 : "${WATCHDOG:=1}"
 : "${WATCHDOG_METHOD:=auto}"  # auto | cron | systemd
 : "${FORCE_IPV6_DISABLE:=1}"
@@ -148,6 +149,10 @@ apt_update_retry() {
 
 install_packages() {
   local mgr="$1"
+  if [[ -z "$mgr" ]]; then
+    warn "No supported package manager found; skipping dependency install."
+    return 0
+  fi
   case "$mgr" in
     apt-get)
       export DEBIAN_FRONTEND=noninteractive
@@ -183,7 +188,8 @@ install_packages() {
         2>&1 | tee -a "$LOG_INSTALL" >/dev/null
       ;;
     *)
-      die "No supported package manager found. Install dependencies manually: curl, wget, screen, iproute2, iputils/ping, perl, file, tar, procps/pgrep."
+      warn "Unsupported package manager: ${mgr}. Install dependencies manually: curl, wget, screen, iproute2, iputils/ping, perl, file, tar, procps/pgrep."
+      return 0
       ;;
   esac
   ok "Packages installed."
@@ -540,7 +546,12 @@ main() {
 
   local pkg_mgr
   pkg_mgr="$(detect_pkg_manager)"
-  install_packages "$pkg_mgr"
+  log "Detected package manager: ${pkg_mgr:-none}"
+  if [[ "${SKIP_PKG_INSTALL}" == "1" ]]; then
+    warn "SKIP_PKG_INSTALL=1 (skipping dependency install)."
+  else
+    install_packages "$pkg_mgr"
+  fi
 
   local tarball; tarball="$(download_release_tarball)"
   extract_and_prepare_binary "$tarball"

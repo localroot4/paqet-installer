@@ -91,6 +91,7 @@ MODE=client SECRET='change-me' TUNNEL_PORT=9999 SERVICE_PORT=8080 OUTSIDE_IP='1.
 - `SCREEN_NAME=LR4-paqet`
 - `AUTO_START=1|0`
 - `AUTO_ATTACH=1|0` (اتصال خودکار به screen در انتها وقتی TTY موجود است)
+- `SKIP_PKG_INSTALL=1|0` (اگر ۱ باشد نصب وابستگی‌ها انجام نمی‌شود)
 - `WATCHDOG=1|0`
 - `WATCHDOG_METHOD=auto|cron|systemd`
 
