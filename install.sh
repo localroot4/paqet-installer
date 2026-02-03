@@ -50,6 +50,9 @@ log()  { echo -e "$(ts) ${C_CYN}[LOG]${C_RST} $*" | tee -a "$LOG_INSTALL"; }
 ok()   { echo -e "$(ts) ${C_GRN}[OK]${C_RST}  $*" | tee -a "$LOG_INSTALL"; }
 warn() { echo -e "$(ts) ${C_YLW}[WARN]${C_RST} $*" | tee -a "$LOG_INSTALL"; }
 err()  { echo -e "$(ts) ${C_RED}[ERR]${C_RST} $*" | tee -a "$LOG_INSTALL" >&2; }
+loge() { echo -e "$(ts) ${C_CYN}[LOG]${C_RST} $*" | tee -a "$LOG_INSTALL" >&2; }
+oke()  { echo -e "$(ts) ${C_GRN}[OK]${C_RST}  $*" | tee -a "$LOG_INSTALL" >&2; }
+warne(){ echo -e "$(ts) ${C_YLW}[WARN]${C_RST} $*" | tee -a "$LOG_INSTALL" >&2; }
 die()  { err "$*"; exit 1; }
 
 on_error() {
@@ -232,12 +235,12 @@ download_with_retry() {
   local url="$1" out="$2"
   local tries=5 wait=2
   for i in $(seq 1 $tries); do
-    log "Downloading ($i/$tries): $url"
+    loge "Downloading ($i/$tries): $url"
     if wget -q --show-progress --timeout=20 --tries=2 "$url" -O "$out"; then
-      ok "Downloaded: $out"
+      oke "Downloaded: $out"
       return 0
     fi
-    warn "Download failed. Retry in ${wait}s..."
+    warne "Download failed. Retry in ${wait}s..."
     sleep "$wait"
     wait=$((wait*2))
   done
@@ -271,7 +274,7 @@ download_release_tarball() {
     local url="${RELEASE_BASE}/${name}"
     out="${ROOT_DIR}/${name}"
     if [[ -f "$out" ]]; then
-      warn "Tarball already exists: $out"
+      warne "Tarball already exists: $out"
       echo "$out"
       return 0
     fi
