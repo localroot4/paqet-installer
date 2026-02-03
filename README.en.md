@@ -32,3 +32,45 @@ Mode: 1 Outside Server or 2 Iran Client
 Ports / secret key / outside IP (for client)
 
 Screen session name
+
+Logs
+
+Installer log:
+
+```/root/paqet-install.log```
+
+Runtime log (paqet output):
+
+```/root/paqet-runtime.log```
+
+Watchdog log:
+
+```/root/paqet-watchdog.log```
+
+View logs:
+
+``` tail -f /root/paqet-runtime.log
+tail -f /root/paqet-watchdog.log```
+
+Screen usage
+
+List screens:
+
+```screen -ls```
+Attach:
+
+```screen -r LR4-paqet```
+
+Detach:
+
+```Press: Ctrl + A then D```
+
+Watchdog (Auto restart)
+
+The installer adds a cron line like:
+
+```* * * * * /root/paqet-watchdog.sh ... ```
+
+
+
+
