@@ -1,4 +1,4 @@
-# Paqet Auto Installer (Ubuntu 22) — by LR4
+# Paqet Auto Installer (Linux) — by LR4
 
 Choose your language:
 

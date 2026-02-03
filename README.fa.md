@@ -1,74 +1,104 @@
-```md
-# نصب و اجرای خودکار Paqet روی Ubuntu 22 — توسط LR4
+# نصب و اجرای خودکار Paqet روی لینوکس — توسط LR4
 
-این ریپو یک اسکریپت یک‌تکه می‌دهد که:
+این ریپو یک اسکریپت **تک‌فایل** می‌دهد که:
 
-- paqet را داخل `/root` دانلود و اکسترکت می‌کند
-- فایل‌های کامل و اصلی example را دقیقاً کپی می‌کند:
+- Paqet را داخل `/root` دانلود و اکسترکت می‌کند
+- فایل‌های کامل و اصلی مثال‌ها را دقیقاً کپی می‌کند:
   - `example/server.yaml.example` → `/root/server.yaml`
   - `example/client.yaml.example` → `/root/client.yaml`
-- فقط همان قسمت‌هایی که لازم است را تغییر می‌دهد (اسم کارت شبکه، MAC گیت‌وی، IP ها، پورت‌ها، سکرت، کامنت کردن IPv6، خاموش کردن socks5 و روشن کردن forward)
-- paqet را داخل **screen** اجرا می‌کند
-- یک **کران‌جاب** اضافه می‌کند که هر ۱ دقیقه چک کند اگر paqet قطع شده (حتی “Killed”) دوباره اجرا کند
+- فقط قسمت‌های لازم را تغییر می‌دهد (کارت شبکه، MAC، IPها، پورت‌ها، سکرت، کامنت IPv6، خاموش‌کردن SOCKS5 و فعال‌کردن forward)
+- Paqet را داخل **screen** اجرا می‌کند
+- یک **واچ‌داگ** (هر ۱ دقیقه با systemd یا cron) اضافه می‌کند تا در صورت قطع شدن Paqet دوباره اجرا شود
 
 ---
 
-## شروع سریع
+## سازگاری
 
-### 1) فایل install.sh را داخل /root بگذارید
+- **سیستم‌عامل:** توزیع‌های لینوکسی با پکیج‌منیجرهای پشتیبانی‌شده (`apt`, `dnf`, `yum`, `apk`, `pacman`, `zypper`).
+- **پردازنده:** `amd64`، `arm64`، `armhf` (تشخیص خودکار).
 
-### 2) اجرا
+> اگر توزیع شما لیست نشده، وابستگی‌ها را دستی نصب کنید: curl, wget, screen, iproute2, iputils/ping, perl, file, tar, procps/pgrep.
+
+---
+
+## شروع سریع (تعامل‌پذیر)
+
 ```bash
 cd /root
 chmod +x install.sh
 sudo ./install.sh
-اسکریپت خیلی ساده چند تا سوال می‌پرسد:
+```
 
-سرور خارج (Server) یا ایران (Client)
+اسکریپت می‌پرسد:
 
-پورت تانل / پورت سرویس / سکرت
+- حالت: **سرور خارج** یا **کلاینت ایران**
+- پورت‌ها و **سکرت**
+- آی‌پی سرور خارج (برای کلاینت)
 
-اسم screen
+---
 
-لاگ‌ها
-لاگ نصب:
+## شروع سریع (بدون تعامل / Pipe)
 
-/root/paqet-install.log
+اگر با `curl | bash` اجرا می‌کنید باید متغیرها را بدهید:
 
-لاگ اجرای paqet:
+```bash
+MODE=server SECRET='change-me' TUNNEL_PORT=9999 \
+  bash <(curl -fsSL https://raw.githubusercontent.com/localroot4/paqet-installer/main/install.sh)
+```
 
-/root/paqet-runtime.log
+**نمونه کلاینت:**
 
-لاگ واچ‌داگ:
+```bash
+MODE=client SECRET='change-me' TUNNEL_PORT=9999 SERVICE_PORT=8080 OUTSIDE_IP='1.2.3.4' \
+  bash <(curl -fsSL https://raw.githubusercontent.com/localroot4/paqet-installer/main/install.sh)
+```
 
-/root/paqet-watchdog.log
+---
+
+## متغیرهای محیطی
+
+- `MODE=server|client`
+- `SECRET='...'`
+- `TUNNEL_PORT=9999`
+- `SERVICE_PORT=8080` (کلاینت)
+- `OUTSIDE_IP='x.x.x.x'` (کلاینت)
+- `PUBLIC_IP='x.x.x.x'` (سرور؛ اختیاری)
+- `LOCAL_IP='x.x.x.x'` (کلاینت؛ اختیاری)
+- `SCREEN_NAME=LR4-paqet`
+- `AUTO_START=1|0`
+- `AUTO_ATTACH=1|0` (اتصال خودکار به screen در انتها وقتی TTY موجود است)
+- `WATCHDOG=1|0`
+- `WATCHDOG_METHOD=auto|cron|systemd`
+
+---
+
+## لاگ‌ها
+
+- لاگ نصب: `/root/paqet-install.log`
+- لاگ اجرای Paqet: `/root/paqet-runtime.log`
+- لاگ واچ‌داگ: `/root/paqet-watchdog.log`
 
 نمایش زنده:
 
+```bash
 tail -f /root/paqet-runtime.log
-tail -f /root/paqet-watchdog.log
-کار با screen
-لیست:
+```
 
-screen -ls
-وصل شدن:
+---
 
-screen -r LR4-paqet
-خارج شدن بدون قطع برنامه:
+## کار با Screen
 
-Ctrl + A سپس D
+- لیست: `screen -ls`
+- وصل شدن: `screen -r LR4-paqet`
+- خروج بدون قطع برنامه: `Ctrl + A` سپس `D`
 
-واچ‌داگ (Restart خودکار)
-اسکریپت یک کران‌جاب می‌سازد که هر ۱ دقیقه چک کند.
-برای دیدنش:
+---
 
-crontab -l
-نکته مهم
-اگر زیاد “Killed” می‌بینید، معمولاً یعنی RAM کم است (OOM).
-راه‌حل:
+## رفع خطا
 
-سرور قوی‌تر
+- **نمایش “Killed” در لاگ:** معمولاً کمبود RAM (OOM).
+  - سرور قوی‌تر
+  - توقف سرویس‌های اضافی
+  - اضافه کردن swap (اختیاری)
 
-کاهش سرویس‌های اضافی
-
-اضافه کردن swap (اختیاری)
+- **تشخیص‌ندادن MAC گیت‌وی:** تنظیمات شبکه را بررسی کنید یا خروجی `ip r` را ببینید.
