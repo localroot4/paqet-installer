@@ -128,7 +128,9 @@ apt_fix_sources_if_needed() {
     sed -i 's#mirror\.hetzner\.com/ubuntu/packages#mirror.hetzner.com/ubuntu-ports/packages#g' /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null || true
     changed=1
   fi
-  [[ "$changed" -eq 1 ]] && warn "ARM detected; adjusted Hetzner sources to ubuntu-ports to avoid 404."
+  if [[ "$changed" -eq 1 ]]; then
+    warn "ARM detected; adjusted Hetzner sources to ubuntu-ports to avoid 404."
+  fi
 }
 
 apt_update_retry() {
