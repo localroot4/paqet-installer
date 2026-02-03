@@ -544,9 +544,13 @@ main() {
   fi
   ok "Inputs OK. (MODE=${MODE}, TUNNEL_PORT=${TUNNEL_PORT}, SERVICE_PORT=${SERVICE_PORT})"
 
-  local pkg_mgr
-  pkg_mgr="$(detect_pkg_manager)"
-  log "Detected package manager: ${pkg_mgr:-none}"
+  local pkg_mgr detect_rc
+  log "Detecting package manager..."
+  set +e
+  pkg_mgr="$(detect_pkg_manager 2>/dev/null)"
+  detect_rc=$?
+  set -e
+  log "Detected package manager: ${pkg_mgr:-none} (rc=${detect_rc})"
   if [[ "${SKIP_PKG_INSTALL}" == "1" ]]; then
     warn "SKIP_PKG_INSTALL=1 (skipping dependency install)."
   else
