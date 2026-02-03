@@ -22,3 +22,13 @@ Put `install.sh` in `/root` (or clone repo and copy it there).
 cd /root
 chmod +x install.sh
 sudo ./install.sh
+
+```
+
+It will ask simple questions:
+
+Mode: 1 Outside Server or 2 Iran Client
+
+Ports / secret key / outside IP (for client)
+
+Screen session name
