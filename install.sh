@@ -7,8 +7,8 @@ set -Eeuo pipefail
 # - Copies example/*.yaml.example to /root/*.yaml
 # - Applies ONLY requested modifications
 # - Runs inside GNU screen + adds cron watchdog (1 min)
-# - Works with: curl ... | bash   (TTY-safe prompts via /dev/tty)
-# - Supports non-interactive mode via ENV vars (MODE/server|client etc.)
+# - Works with: curl ... | bash   (TTY-safe prompts via /dev/tty when available)
+# - Supports non-interactive mode via ENV vars
 # - Logs to screen + /root/paqet-install.log + /root/paqet-runtime.log
 # - Written by Atil (LR4)  /  https://github.com/localroot4
 ############################################
@@ -33,18 +33,17 @@ SCREEN_NAME_DEFAULT="LR4-paqet"
 # ---- ENV (non-interactive) support ----
 # MODE: "server" or "client"
 # TUNNEL_PORT: default 9999
-# SECRET: required (or will prompt)
+# SECRET: required (or prompt if TTY exists)
 # SCREEN_NAME: default LR4-paqet
-# OUTSIDE_IP: required for client (or will prompt)
+# OUTSIDE_IP: required for client
 # SERVICE_PORT: default 8080 (client only)
-# PUBLIC_IP: optional for server; autodetect or prompt
-# LOCAL_IP: optional for client; autodetect or prompt
+# PUBLIC_IP: optional for server; autodetect
+# LOCAL_IP: optional for client; autodetect
 #
-# Example:
-#   MODE=server TUNNEL_PORT=9999 SECRET=abc SCREEN_NAME=LR4 curl -fsSL <url> | bash
+# Examples:
+#   MODE=server TUNNEL_PORT=9999 SECRET=abc curl -fsSL <url> | bash
 #   MODE=client OUTSIDE_IP=1.2.3.4 TUNNEL_PORT=9999 SERVICE_PORT=8080 SECRET=abc curl -fsSL <url> | bash
 
-# ---------- logging ----------
 ts() { date +"%Y-%m-%d %H:%M:%S"; }
 C_RED="\033[0;31m"; C_GRN="\033[0;32m"; C_YLW="\033[1;33m"; C_CYN="\033[0;36m"; C_RST="\033[0m"
 log()  { echo -e "$(ts) ${C_CYN}[LOG]${C_RST} $*" | tee -a "$LOG_INSTALL"; }
@@ -68,35 +67,46 @@ need_root() {
   fi
 }
 
-# ---- robust prompt that works with: curl | bash ----
-TTY_IN="/dev/tty"
+# ---- TTY handling (works for curl|bash when controlling TTY exists) ----
+TTY_OK=0
+if [[ -t 0 || -t 1 || -t 2 ]]; then
+  TTY_OK=1
+fi
+
+# try opening /dev/tty on FD 3 for robust prompts
+TTY_FD=3
+if [[ -r /dev/tty && -w /dev/tty ]]; then
+  exec 3</dev/tty 3>/dev/tty || true
+fi
+
 prompt() {
   local __var="$1"
   local __text="$2"
   local __def="${3:-}"
   local __val=""
 
-  if [[ -t 0 ]]; then
-    if [[ -n "$__def" ]]; then
-      read -r -p "$__text [$__def]: " __val
-      __val="${__val:-$__def}"
-    else
-      read -r -p "$__text: " __val
-    fi
+  # If no TTY and no /dev/tty FD, do not crash: ask user to use ENV mode
+  if [[ "$TTY_OK" -ne 1 && ! -t "$TTY_FD" ]]; then
+    err "No interactive TTY available for prompts."
+    err "Use ENV mode. Example:"
+    err "  MODE=server TUNNEL_PORT=9999 SECRET='...' curl -fsSL <url> | bash"
+    exit 2
+  fi
+
+  # Print prompt to TTY FD when piping
+  if [[ -n "$__def" ]]; then
+    printf "%s [%s]: " "$__text" "$__def" >&"$TTY_FD"
   else
-    if [[ -r "$TTY_IN" ]]; then
-      if [[ -n "$__def" ]]; then
-        read -r -p "$__text [$__def]: " __val < "$TTY_IN"
-        __val="${__val:-$__def}"
-      else
-        read -r -p "$__text: " __val < "$TTY_IN"
-      fi
-    else
-      err "No interactive TTY available."
-      err "Use non-interactive ENV mode or run locally like:"
-      err "  curl -fsSL <url> -o /root/install.sh && bash /root/install.sh"
-      exit 1
-    fi
+    printf "%s: " "$__text" >&"$TTY_FD"
+  fi
+
+  if ! IFS= read -r __val <&"$TTY_FD"; then
+    err "Failed to read input from TTY."
+    exit 2
+  fi
+
+  if [[ -n "$__def" && -z "$__val" ]]; then
+    __val="$__def"
   fi
 
   printf -v "$__var" "%s" "$__val"
@@ -198,14 +208,12 @@ find_example_dir() {
   echo "$d"
 }
 
-# ---------- YAML edits: keep full file, change only needed parts ----------
 set_interface_line() {
   local file="$1" iface="$2"
   sed -i "s/^\([[:space:]]*interface:[[:space:]]*\)\"[^\"]*\"/\1\"${iface}\"/" "$file"
 }
 
 set_router_mac_ipv4_only() {
-  # Replace only the FIRST router_mac occurrence (IPv4 one in templates)
   local file="$1" mac="$2"
   perl -0777 -i -pe "s/router_mac: \"[^\"]*\"/router_mac: \"$mac\"/s" "$file"
 }
@@ -272,12 +280,10 @@ set_forward_listen_target_client() {
   sed -i "s/\"127\.0\.0\.1:80\"/\"${outside_ip}:${service_port}\"/" "$file"
 }
 
-# ---------- screen runner ----------
 screen_exists() { local name="$1"; screen -ls 2>/dev/null | grep -q "[[:space:]]${name}[[:space:]]"; }
 
 start_in_screen() {
   local screen_name="$1" mode="$2" cfg="$3"
-
   screen -wipe >/dev/null 2>&1 || true
 
   if screen_exists "$screen_name"; then
@@ -286,7 +292,6 @@ start_in_screen() {
   fi
 
   : >> "$LOG_RUNTIME"
-
   log "Starting paqet in screen session: $screen_name"
   log "Command: ${BIN_LOCAL} run -c ${cfg}"
 
@@ -302,7 +307,6 @@ start_in_screen() {
   ok "Screen started. Attach with: screen -r ${screen_name}"
 }
 
-# ---------- watchdog ----------
 write_watchdog() {
   cat > "$WATCHDOG" <<'EOF'
 #!/usr/bin/env bash
@@ -367,29 +371,22 @@ main(){
   log "Process not running. Restart needed."
   restart
 }
-
 main
 EOF
 
   chmod +x "$WATCHDOG"
   ok "Watchdog created: $WATCHDOG"
-  ok "Watchdog log: /root/paqet-watchdog.log"
 }
 
 install_cron_watchdog() {
   local mode="$1" screen_name="$2" cfg="$3"
   local cron_line="* * * * * ${WATCHDOG} ${mode} ${screen_name} ${BIN_LOCAL} ${cfg} ${LOG_RUNTIME}"
-
   log "Installing cron watchdog (every 1 minute)..."
   ( crontab -l 2>/dev/null | grep -v "paqet-watchdog.sh" || true; echo "$cron_line" ) | crontab -
   ok "Cron installed."
-  log "Current crontab:"
-  crontab -l | tee -a "$LOG_INSTALL"
 }
 
-# ---------- ENV helpers ----------
 env_get() {
-  # prints env var if set and non-empty
   local k="$1"
   local v="${!k:-}"
   [[ -n "$v" ]] && echo "$v" || true
@@ -404,7 +401,7 @@ main() {
   log "Version: ${VERSION}"
   log "Install log : ${LOG_INSTALL}"
   log "Runtime log : ${LOG_RUNTIME}"
-  log "Input mode  : $( [[ -t 0 ]] && echo 'TTY OK' || echo 'PIPE detected (using /dev/tty or ENV)' )"
+  log "Input mode  : $( [[ -t 0 ]] && echo 'TTY OK' || echo 'PIPE detected (ENV recommended; prompts use /dev/tty if available)' )"
 
   apt_install
   extract_and_prepare_binary
@@ -414,7 +411,6 @@ main() {
   [[ -z "$example_dir" ]] && die "Could not find example directory inside extracted files: $EXTRACT_DIR"
   ok "Found example dir: $example_dir"
 
-  # Detect network basics
   log "Detecting network info..."
   local iface gw local_ip public_ip gw_mac
   iface="$(get_default_if)"
@@ -440,9 +436,9 @@ main() {
 
   write_watchdog
 
-  # MODE selection: ENV first, else prompt
   local mode
   mode="$(env_get MODE)"
+
   if [[ -z "$mode" ]]; then
     echo
     log "Choose mode:"
@@ -451,41 +447,31 @@ main() {
     echo
     local choice
     prompt choice "Enter 1 or 2" "1"
-    if [[ "$choice" == "1" ]]; then mode="server"; else mode="client"; fi
+    [[ "$choice" == "1" ]] && mode="server" || mode="client"
   fi
 
-  # Screen name
   local screen_name
   screen_name="$(env_get SCREEN_NAME)"
-  if [[ -z "$screen_name" ]]; then
-    prompt screen_name "Screen session name" "$SCREEN_NAME_DEFAULT"
-  fi
+  [[ -z "$screen_name" ]] && prompt screen_name "Screen session name" "$SCREEN_NAME_DEFAULT"
 
-  # Tunnel port
   local tunnel_port
   tunnel_port="$(env_get TUNNEL_PORT)"
-  if [[ -z "$tunnel_port" ]]; then
-    prompt tunnel_port "Tunnel port (listen)" "9999"
-  fi
+  [[ -z "$tunnel_port" ]] && prompt tunnel_port "Tunnel port (listen)" "9999"
 
-  # Secret
   local secret
   secret="$(env_get SECRET)"
   if [[ -z "$secret" ]]; then
+    if [[ -n "$(env_get MODE)" ]]; then
+      die "SECRET is required in ENV mode."
+    fi
     prompt secret "Secret key (must match both sides)" "change-me-please"
   fi
 
   if [[ "$mode" == "server" ]]; then
-    # Public IP (server): ENV -> autodetect -> prompt
     local public_ip_final
     public_ip_final="$(env_get PUBLIC_IP)"
-    if [[ -z "$public_ip_final" ]]; then
-      public_ip_final="$public_ip"
-    fi
-    if [[ -z "$public_ip_final" ]]; then
-      warn "Public IPv4 not detected automatically."
-      prompt public_ip_final "Enter public IPv4 of THIS outside server"
-    fi
+    [[ -z "$public_ip_final" ]] && public_ip_final="$public_ip"
+    [[ -z "$public_ip_final" ]] && prompt public_ip_final "Enter public IPv4 of THIS outside server"
 
     log "Copying FULL server example -> ${SERVER_YAML}"
     cp -f "${example_dir}/server.yaml.example" "$SERVER_YAML"
@@ -500,44 +486,29 @@ main() {
     set_secret_key "$SERVER_YAML" "$secret"
     ok "server.yaml ready."
 
-    log "Starting server in screen..."
     start_in_screen "$screen_name" "server" "$SERVER_YAML"
     install_cron_watchdog "server" "$screen_name" "$SERVER_YAML"
 
     ok "DONE (Outside Server)."
-    echo
-    echo "Useful:"
-    echo "  screen -ls"
-    echo "  screen -r ${screen_name}"
-    echo "  tail -f ${LOG_RUNTIME}"
-    echo "  tail -f /root/paqet-watchdog.log"
-    echo
 
   elif [[ "$mode" == "client" ]]; then
-    # Outside IP required for client
     local outside_ip
     outside_ip="$(env_get OUTSIDE_IP)"
     if [[ -z "$outside_ip" ]]; then
+      if [[ -n "$(env_get MODE)" ]]; then
+        die "OUTSIDE_IP is required in ENV mode (client)."
+      fi
       prompt outside_ip "Outside server PUBLIC IPv4"
     fi
 
-    # Service port
     local service_port
     service_port="$(env_get SERVICE_PORT)"
-    if [[ -z "$service_port" ]]; then
-      prompt service_port "Service port to expose on Iran (0.0.0.0:PORT)" "8080"
-    fi
+    [[ -z "$service_port" ]] && prompt service_port "Service port to expose on Iran (0.0.0.0:PORT)" "8080"
 
-    # Local IP: ENV -> autodetect -> prompt
     local local_ip_final
     local_ip_final="$(env_get LOCAL_IP)"
-    if [[ -z "$local_ip_final" ]]; then
-      local_ip_final="$local_ip"
-    fi
-    if [[ -z "$local_ip_final" ]]; then
-      warn "Local IPv4 not detected automatically."
-      prompt local_ip_final "Enter local IPv4 of THIS Iran server (example: 192.168.1.100)"
-    fi
+    [[ -z "$local_ip_final" ]] && local_ip_final="$local_ip"
+    [[ -z "$local_ip_final" ]] && prompt local_ip_final "Enter local IPv4 of THIS Iran server (example: 192.168.1.100)"
 
     log "Copying FULL client example -> ${CLIENT_YAML}"
     cp -f "${example_dir}/client.yaml.example" "$CLIENT_YAML"
@@ -554,21 +525,13 @@ main() {
     set_secret_key "$CLIENT_YAML" "$secret"
     ok "client.yaml ready."
 
-    log "Starting client in screen..."
     start_in_screen "$screen_name" "client" "$CLIENT_YAML"
     install_cron_watchdog "client" "$screen_name" "$CLIENT_YAML"
 
     ok "DONE (Iran Client)."
-    echo
-    echo "Useful:"
-    echo "  screen -ls"
-    echo "  screen -r ${screen_name}"
-    echo "  tail -f ${LOG_RUNTIME}"
-    echo "  tail -f /root/paqet-watchdog.log"
-    echo
 
   else
-    die "Invalid MODE. Use MODE=server or MODE=client (or pick 1/2 in prompt)."
+    die "Invalid MODE. Use MODE=server or MODE=client."
   fi
 
   ok "All steps completed successfully."
