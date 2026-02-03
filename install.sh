@@ -80,37 +80,39 @@ if [[ -r /dev/tty && -w /dev/tty ]]; then
 fi
 
 prompt() {
-  local __var="$1"
-  local __text="$2"
-  local __def="${3:-}"
-  local __val=""
+  local __var="$1" __text="$2" __def="${3:-}" __val=""
 
-  # If no TTY and no /dev/tty FD, do not crash: ask user to use ENV mode
-  if [[ "$TTY_OK" -ne 1 && ! -t "$TTY_FD" ]]; then
-    err "No interactive TTY available for prompts."
-    err "Use ENV mode. Example:"
+  # If piping and no usable TTY: do not attempt prompt
+  if [[ ! -t 0 && ! -r /dev/tty ]]; then
+    err "No usable TTY for interactive mode."
+    err "Run with ENV vars, e.g.:"
     err "  MODE=server TUNNEL_PORT=9999 SECRET='...' curl -fsSL <url> | bash"
+    err "Or run interactive via PTY:"
+    err "  script -q -c \"bash -lc 'curl -fsSL <url> | bash'\" /dev/null"
     exit 2
   fi
 
-  # Print prompt to TTY FD when piping
-  if [[ -n "$__def" ]]; then
-    printf "%s [%s]: " "$__text" "$__def" >&"$TTY_FD"
+  # Use /dev/tty if stdin isn't TTY
+  if [[ -t 0 ]]; then
+    if [[ -n "$__def" ]]; then
+      read -r -p "$__text [$__def]: " __val
+      __val="${__val:-$__def}"
+    else
+      read -r -p "$__text: " __val
+    fi
   else
-    printf "%s: " "$__text" >&"$TTY_FD"
-  fi
-
-  if ! IFS= read -r __val <&"$TTY_FD"; then
-    err "Failed to read input from TTY."
-    exit 2
-  fi
-
-  if [[ -n "$__def" && -z "$__val" ]]; then
-    __val="$__def"
+    if [[ -n "$__def" ]]; then
+      printf "%s [%s]: " "$__text" "$__def" > /dev/tty
+    else
+      printf "%s: " "$__text" > /dev/tty
+    fi
+    IFS= read -r __val < /dev/tty || { err "Failed to read from /dev/tty"; exit 2; }
+    [[ -n "$__def" && -z "$__val" ]] && __val="$__def"
   fi
 
   printf -v "$__var" "%s" "$__val"
 }
+
 
 apt_install() {
   export DEBIAN_FRONTEND=noninteractive
