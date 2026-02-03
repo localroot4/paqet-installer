@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 ############################################
-# Paqet Auto Installer/Configurator (Ubuntu 22)
+# Paqet Auto Installer/Configurator (Linux)
 # - Keeps FULL original example YAML structure
 # - Copies example/*.yaml.example to /root/*.yaml
 # - Applies ONLY requested modifications
@@ -17,14 +17,17 @@ set -Eeuo pipefail
 # ===== Hard init (prevents "unbound variable" with set -u) =====
 : "${PAQET_VERSION:=v1.0.0-alpha.11}"
 : "${MODE:=}"            # server | client
-: "${TUNNEL_PORT:=9999}"
-: "${SERVICE_PORT:=8080}"
+: "${TUNNEL_PORT:=}"
+: "${SERVICE_PORT:=}"
 : "${OUTSIDE_IP:=}"
 : "${PUBLIC_IP:=}"
 : "${LOCAL_IP:=}"
 : "${SECRET:=}"
-: "${SCREEN_NAME:=LR4-paqet}"
+: "${SCREEN_NAME:=}"
+: "${KEEP_SCREEN_OPEN:=1}"
 : "${AUTO_START:=1}"
+: "${AUTO_ATTACH:=1}"
+: "${SKIP_PKG_INSTALL:=0}"
 : "${WATCHDOG:=1}"
 : "${WATCHDOG_METHOD:=auto}"  # auto | cron | systemd
 : "${FORCE_IPV6_DISABLE:=1}"
@@ -48,16 +51,22 @@ log()  { echo -e "$(ts) ${C_CYN}[LOG]${C_RST} $*" | tee -a "$LOG_INSTALL"; }
 ok()   { echo -e "$(ts) ${C_GRN}[OK]${C_RST}  $*" | tee -a "$LOG_INSTALL"; }
 warn() { echo -e "$(ts) ${C_YLW}[WARN]${C_RST} $*" | tee -a "$LOG_INSTALL"; }
 err()  { echo -e "$(ts) ${C_RED}[ERR]${C_RST} $*" | tee -a "$LOG_INSTALL" >&2; }
+loge() { echo -e "$(ts) ${C_CYN}[LOG]${C_RST} $*" | tee -a "$LOG_INSTALL" >&2; }
+oke()  { echo -e "$(ts) ${C_GRN}[OK]${C_RST}  $*" | tee -a "$LOG_INSTALL" >&2; }
+warne(){ echo -e "$(ts) ${C_YLW}[WARN]${C_RST} $*" | tee -a "$LOG_INSTALL" >&2; }
 die()  { err "$*"; exit 1; }
 
 on_error() {
   local code=$?
+  local line="${1:-unknown}"
   err "Installer failed (exit code: $code)."
+  err "Failed command: ${BASH_COMMAND}"
+  err "At line: ${line}"
   err "Last 200 install log lines:"
   tail -n 200 "$LOG_INSTALL" 2>/dev/null || true
   exit "$code"
 }
-trap on_error ERR
+trap 'on_error $LINENO' ERR
 
 need_root() { [[ "${EUID}" -eq 0 ]] || die "Run as root. (sudo -i)"; }
 is_pipe_mode() { [[ ! -t 0 ]]; }
@@ -78,10 +87,10 @@ prompt() {
   local __var="$1" __text="$2" __def="${3:-}" __val=""
   has_tty || die "Interactive prompt requested but no TTY. Use ENV vars."
   if [[ -n "$__def" ]]; then
-    read -r -p "$__text [$__def]: " __val
+    read -r -p "$__text [$__def]: " __val || true
     __val="${__val:-$__def}"
   else
-    read -r -p "$__text: " __val
+    read -r -p "$__text: " __val || true
   fi
   printf -v "$__var" "%s" "$__val"
 }
@@ -101,7 +110,16 @@ detect_arch() {
 ARCH="$(detect_arch)"
 BIN_LOCAL="${ROOT_DIR}/paqet_linux_${ARCH}"
 
-# ===== APT resiliency (Hetzner ARM mirror 404 fix) =====
+# ===== Package manager helpers =====
+detect_pkg_manager() {
+  local mgr=""
+  for mgr in apt-get dnf yum apk pacman zypper; do
+    command -v "$mgr" >/dev/null 2>&1 && { echo "$mgr"; return 0; }
+  done
+  echo ""
+}
+
+# APT resiliency (Hetzner ARM mirror 404 fix)
 apt_fix_sources_if_needed() {
   [[ "$ARCH" == "arm64" || "$ARCH" == "armhf" ]] || return 0
 
@@ -114,7 +132,9 @@ apt_fix_sources_if_needed() {
     sed -i 's#mirror\.hetzner\.com/ubuntu/packages#mirror.hetzner.com/ubuntu-ports/packages#g' /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null || true
     changed=1
   fi
-  [[ "$changed" -eq 1 ]] && warn "ARM detected; adjusted Hetzner sources to ubuntu-ports to avoid 404."
+  if [[ "$changed" -eq 1 ]]; then
+    warn "ARM detected; adjusted Hetzner sources to ubuntu-ports to avoid 404."
+  fi
 }
 
 apt_update_retry() {
@@ -136,13 +156,51 @@ apt_update_retry() {
   return 1
 }
 
-apt_install() {
-  export DEBIAN_FRONTEND=noninteractive
-  apt_fix_sources_if_needed
-  apt_update_retry || die "apt update failed. Check sources/network."
-  log "Installing packages: wget curl screen net-tools iproute2 ping libpcap-dev perl file..."
-  apt-get install -y wget curl ca-certificates screen net-tools iproute2 iputils-ping libpcap-dev perl file \
-    2>&1 | tee -a "$LOG_INSTALL" >/dev/null
+install_packages() {
+  local mgr="$1"
+  if [[ -z "$mgr" ]]; then
+    warn "No supported package manager found; skipping dependency install."
+    return 0
+  fi
+  case "$mgr" in
+    apt-get)
+      export DEBIAN_FRONTEND=noninteractive
+      apt_fix_sources_if_needed
+      apt_update_retry || die "apt update failed. Check sources/network."
+      log "Installing packages (apt): wget curl screen net-tools iproute2 ping perl file tar procps..."
+      apt-get install -y wget curl ca-certificates screen net-tools iproute2 iputils-ping perl file tar procps \
+        2>&1 | tee -a "$LOG_INSTALL" >/dev/null
+      ;;
+    dnf)
+      log "Installing packages (dnf): wget curl screen net-tools iproute iputils perl file tar procps-ng..."
+      dnf -y install wget curl ca-certificates screen net-tools iproute iputils perl file tar procps-ng \
+        2>&1 | tee -a "$LOG_INSTALL" >/dev/null
+      ;;
+    yum)
+      log "Installing packages (yum): wget curl screen net-tools iproute iputils perl file tar procps-ng..."
+      yum -y install wget curl ca-certificates screen net-tools iproute iputils perl file tar procps-ng \
+        2>&1 | tee -a "$LOG_INSTALL" >/dev/null
+      ;;
+    apk)
+      log "Installing packages (apk): wget curl screen net-tools iproute2 iputils perl file tar procps..."
+      apk add --no-cache wget curl ca-certificates screen net-tools iproute2 iputils perl file tar procps \
+        2>&1 | tee -a "$LOG_INSTALL" >/dev/null
+      ;;
+    pacman)
+      log "Installing packages (pacman): wget curl screen net-tools iproute2 iputils perl file tar procps-ng..."
+      pacman -Sy --noconfirm wget curl ca-certificates screen net-tools iproute2 iputils perl file tar procps-ng \
+        2>&1 | tee -a "$LOG_INSTALL" >/dev/null
+      ;;
+    zypper)
+      log "Installing packages (zypper): wget curl screen net-tools iproute2 iputils perl file tar procps..."
+      zypper --non-interactive install wget curl ca-certificates screen net-tools iproute2 iputils perl file tar procps \
+        2>&1 | tee -a "$LOG_INSTALL" >/dev/null
+      ;;
+    *)
+      warn "Unsupported package manager: ${mgr}. Install dependencies manually: curl, wget, screen, iproute2, iputils/ping, perl, file, tar, procps/pgrep."
+      return 0
+      ;;
+  esac
   ok "Packages installed."
 }
 
@@ -178,12 +236,12 @@ download_with_retry() {
   local url="$1" out="$2"
   local tries=5 wait=2
   for i in $(seq 1 $tries); do
-    log "Downloading ($i/$tries): $url"
+    loge "Downloading ($i/$tries): $url"
     if wget -q --show-progress --timeout=20 --tries=2 "$url" -O "$out"; then
-      ok "Downloaded: $out"
+      oke "Downloaded: $out"
       return 0
     fi
-    warn "Download failed. Retry in ${wait}s..."
+    warne "Download failed. Retry in ${wait}s..."
     sleep "$wait"
     wait=$((wait*2))
   done
@@ -217,7 +275,7 @@ download_release_tarball() {
     local url="${RELEASE_BASE}/${name}"
     out="${ROOT_DIR}/${name}"
     if [[ -f "$out" ]]; then
-      warn "Tarball already exists: $out"
+      warne "Tarball already exists: $out"
       echo "$out"
       return 0
     fi
@@ -283,21 +341,23 @@ set_router_mac_all_occurrences() {
 
 comment_ipv6_block_requested_style() {
   local file="$1"
-  sed -i 's/^\([[:space:]]*\)ipv6:/\1#ipv6:/' "$file"
-  sed -i 's/^\([[:space:]]*\)addr: /\1#addr: /' "$file"
-  sed -i 's/^\([[:space:]]*\)router_mac: /\1#router_mac: /' "$file"
+  perl -i -pe '
+    if (/^\s*ipv6:/) { $in=1; s/^(\s*)ipv6:/$1#ipv6:/; next; }
+    if ($in && /^\s*addr:/) { s/^(\s*)addr:/$1#addr:/; next; }
+    if ($in && /^\s*router_mac:/) { s/^(\s*)router_mac:/$1#router_mac:/; $in=0; next; }
+    if ($in && /^\s*\S/ && !/^\s*#/) { $in=0; }
+  ' "$file"
 }
 
 set_server_listen_port() {
   local file="$1" port="$2"
-  sed -i "s/^\([[:space:]]*addr:[[:space:]]*\)\":9999\"/\1\":${port}\"/" "$file"
-  sed -i "s/^\([[:space:]]*addr:[[:space:]]*\)\":\([0-9]\+\)\"/\1\":${port}\"/" "$file"
+  sed -i -E "s/^([[:space:]]*)#?[[:space:]]*addr:[[:space:]]*\":[0-9]+\"/\1addr: \":${port}\"/" "$file"
 }
 
 set_server_ipv4_addr_public() {
   local file="$1" ip="$2" port="$3"
   sed -i "s/\"10\.0\.0\.100:9999\"/\"${ip}:${port}\"/" "$file"
-  sed -i "s/^\([[:space:]]*addr:[[:space:]]*\)\"[0-9]\+\.[0-9]\+\.[0-9]\+\.[0-9]\+:[0-9]\+\"/\1\"${ip}:${port}\"/" "$file"
+  sed -i "s/^[[:space:]]*#\?[[:space:]]*addr:[[:space:]]*\"[0-9]\+\.[0-9]\+\.[0-9]\+\.[0-9]\+:[0-9]\+\"/    addr: \"${ip}:${port}\"/" "$file"
 }
 
 set_secret_key() {
@@ -354,9 +414,16 @@ start_in_screen() {
   screen -dmS "$SCREEN_NAME" bash -lc "
     cd '$ROOT_DIR'
     echo '--- $(ts) START ${mode} ---' >> '$LOG_RUNTIME'
+    if command -v apt-get >/dev/null 2>&1; then
+      apt-get install -y libpcap-dev >/dev/null 2>&1 || true
+    fi
     chmod +x '$BIN_LOCAL'
     '$BIN_LOCAL' run -c '$cfg' 2>&1 | tee -a '$LOG_RUNTIME'
     echo '--- $(ts) STOP ${mode} (process ended) ---' >> '$LOG_RUNTIME'
+    if [[ '${KEEP_SCREEN_OPEN}' == '1' ]]; then
+      echo 'Process ended. Keeping screen open for debugging...' | tee -a '$LOG_RUNTIME'
+      exec bash
+    fi
     sleep 2
   "
   ok "Screen started. Attach: screen -r ${SCREEN_NAME}"
@@ -477,16 +544,26 @@ main() {
       [[ "$choice" == "1" ]] && MODE="server" || MODE="client"
     fi
 
-    [[ -n "${SECRET:-}" ]]      || prompt SECRET "Secret key (must match both sides)" "change-me-please"
-    [[ -n "${TUNNEL_PORT:-}" ]] || prompt TUNNEL_PORT "Tunnel port" "9999"
+    [[ -n "${SECRET:-}" ]] || prompt SECRET "Secret key (must match both sides)" "change-me-please"
+    if [[ -z "${TUNNEL_PORT:-}" ]]; then
+      prompt TUNNEL_PORT "Tunnel port" "9999"
+    fi
+    if [[ -z "${SCREEN_NAME:-}" ]]; then
+      prompt SCREEN_NAME "Screen session name" "LR4-paqet"
+    fi
 
     if [[ "${MODE}" == "client" ]]; then
-      [[ -n "${OUTSIDE_IP:-}" ]]   || prompt OUTSIDE_IP "Outside server PUBLIC IPv4" ""
-      [[ -n "${SERVICE_PORT:-}" ]] || prompt SERVICE_PORT "Service port to expose (0.0.0.0:PORT)" "8080"
+      [[ -n "${OUTSIDE_IP:-}" ]] || prompt OUTSIDE_IP "Outside server PUBLIC IPv4" ""
+      if [[ -z "${SERVICE_PORT:-}" ]]; then
+        prompt SERVICE_PORT "Service port to expose (0.0.0.0:PORT)" "8080"
+      fi
     fi
   fi
 
   # ---- VALIDATION (safe with set -u) ----
+  TUNNEL_PORT="${TUNNEL_PORT:-9999}"
+  SERVICE_PORT="${SERVICE_PORT:-8080}"
+  SCREEN_NAME="${SCREEN_NAME:-LR4-paqet}"
   log "Validating inputs..."
   [[ "${MODE:-}" == "server" || "${MODE:-}" == "client" ]] || die "Invalid MODE. Use server/client."
   [[ -n "${SECRET:-}" ]] || die "SECRET is required."
@@ -495,7 +572,18 @@ main() {
   fi
   ok "Inputs OK. (MODE=${MODE}, TUNNEL_PORT=${TUNNEL_PORT}, SERVICE_PORT=${SERVICE_PORT})"
 
-  apt_install
+  local pkg_mgr detect_rc
+  log "Detecting package manager..."
+  set +e
+  pkg_mgr="$(detect_pkg_manager 2>/dev/null)"
+  detect_rc=$?
+  set -e
+  log "Detected package manager: ${pkg_mgr:-none} (rc=${detect_rc})"
+  if [[ "${SKIP_PKG_INSTALL}" == "1" ]]; then
+    warn "SKIP_PKG_INSTALL=1 (skipping dependency install)."
+  else
+    install_packages "$pkg_mgr"
+  fi
 
   local tarball; tarball="$(download_release_tarball)"
   extract_and_prepare_binary "$tarball"
@@ -549,6 +637,10 @@ main() {
     log "Attach      : screen -r ${SCREEN_NAME}"
     log "Runtime log : $LOG_RUNTIME"
     log "Watchdog log: $LOG_WATCHDOG"
+    if has_tty && [[ "${AUTO_ATTACH}" == "1" ]]; then
+      log "Auto-attaching to screen session: ${SCREEN_NAME}"
+      screen -r "${SCREEN_NAME}"
+    fi
     exit 0
   fi
 
@@ -581,5 +673,9 @@ main() {
   log "Attach      : screen -r ${SCREEN_NAME}"
   log "Runtime log : $LOG_RUNTIME"
   log "Watchdog log: $LOG_WATCHDOG"
+  if has_tty && [[ "${AUTO_ATTACH}" == "1" ]]; then
+    log "Auto-attaching to screen session: ${SCREEN_NAME}"
+    screen -r "${SCREEN_NAME}"
+  fi
 }
 main "$@"
