@@ -54,12 +54,15 @@ die()  { err "$*"; exit 1; }
 
 on_error() {
   local code=$?
+  local line="${1:-unknown}"
   err "Installer failed (exit code: $code)."
+  err "Failed command: ${BASH_COMMAND}"
+  err "At line: ${line}"
   err "Last 200 install log lines:"
   tail -n 200 "$LOG_INSTALL" 2>/dev/null || true
   exit "$code"
 }
-trap on_error ERR
+trap 'on_error $LINENO' ERR
 
 need_root() { [[ "${EUID}" -eq 0 ]] || die "Run as root. (sudo -i)"; }
 is_pipe_mode() { [[ ! -t 0 ]]; }
