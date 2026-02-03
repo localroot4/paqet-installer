@@ -6,15 +6,16 @@ set -Eeuo pipefail
 # - Keeps FULL original example YAML structure
 # - Copies example/*.yaml.example to /root/*.yaml
 # - Applies ONLY requested modifications
+# - AUTO-detects CPU arch (amd64/arm64) and downloads correct release asset
+# - Works with: curl ... | bash  (NO interactive prompts in pipe mode)
+# - Interactive prompts ONLY when run from a real TTY (local file execution)
 # - Runs inside GNU screen + watchdog (every 1 minute)
-# - Works reliably with: curl ... | bash   (NO interactive prompts in pipe mode)
-# - Supports interactive mode only when run with a real TTY (local file execution)
 # - Logs to screen + /root/paqet-install.log + /root/paqet-runtime.log
 # - Written by Atil (LR4) / localroot4
 ############################################
 
 # ===== Defaults (override via ENV) =====
-PAQET_VERSION="${PAQET_VERSION:-v1.0.0-alpha.11}"   # you can set v1.0.0-alpha.12 etc
+PAQET_VERSION="${PAQET_VERSION:-v1.0.0-alpha.11}"   # ex: v1.0.0-alpha.11
 MODE="${MODE:-}"                                    # server | client (REQUIRED in pipe mode)
 TUNNEL_PORT="${TUNNEL_PORT:-9999}"
 SERVICE_PORT="${SERVICE_PORT:-8080}"                # client only
@@ -35,12 +36,11 @@ LOG_RUNTIME="${ROOT_DIR}/paqet-runtime.log"
 LOG_WATCHDOG="${ROOT_DIR}/paqet-watchdog.log"
 
 EXTRACT_DIR="${ROOT_DIR}/paqet"
-BIN_LOCAL="${ROOT_DIR}/paqet_linux_amd64"           # keep name stable for your docs
 SERVER_YAML="${ROOT_DIR}/server.yaml"
 CLIENT_YAML="${ROOT_DIR}/client.yaml"
 WATCHDOG_SH="${ROOT_DIR}/paqet-watchdog.sh"
 
-# ===== GitHub release URL pattern (we try multiple arch names) =====
+# ===== Release base =====
 RELEASE_BASE="https://github.com/hanselime/paqet/releases/download/${PAQET_VERSION}"
 
 # ===== Pretty logs =====
@@ -65,14 +65,8 @@ need_root() {
   [[ "${EUID}" -eq 0 ]] || die "Run as root. (sudo -i)"
 }
 
-is_pipe_mode() {
-  # true when running: curl ... | bash
-  [[ ! -t 0 ]]
-}
-
-has_tty() {
-  [[ -t 0 && -t 1 ]]
-}
+is_pipe_mode() { [[ ! -t 0 ]]; }
+has_tty() { [[ -t 0 && -t 1 ]]; }
 
 # ===== Strict rule: NO prompts in pipe mode =====
 require_env_in_pipe() {
@@ -85,12 +79,9 @@ require_env_in_pipe() {
   fi
 }
 
-# ===== Optional interactive prompts (ONLY when running locally, not via pipe) =====
 prompt() {
   local __var="$1" __text="$2" __def="${3:-}" __val=""
-  if ! has_tty; then
-    die "Interactive prompt requested but no TTY. Use ENV vars."
-  fi
+  has_tty || die "Interactive prompt requested but no TTY. Use ENV vars."
   if [[ -n "$__def" ]]; then
     read -r -p "$__text [$__def]: " __val
     __val="${__val:-$__def}"
@@ -100,13 +91,28 @@ prompt() {
   printf -v "$__var" "%s" "$__val"
 }
 
+# ===== Arch detect + stable BIN path =====
+detect_arch() {
+  local a=""
+  a="$(dpkg --print-architecture 2>/dev/null || true)"
+  if [[ -z "$a" ]]; then
+    a="$(uname -m 2>/dev/null || echo unknown)"
+  fi
+  case "$a" in
+    amd64|x86_64) echo "amd64" ;;
+    arm64|aarch64) echo "arm64" ;;
+    armhf|armv7l) echo "armhf" ;;
+    *) echo "$a" ;;
+  esac
+}
+
+ARCH="$(detect_arch)"
+BIN_LOCAL="${ROOT_DIR}/paqet_linux_${ARCH}"
+
 # ===== APT resiliency (Hetzner ARM mirror 404 fix) =====
 apt_fix_sources_if_needed() {
-  local arch
-  arch="$(dpkg --print-architecture 2>/dev/null || echo "")"
-  [[ "$arch" == "arm64" || "$arch" == "armhf" ]] || return 0
+  [[ "$ARCH" == "arm64" || "$ARCH" == "armhf" ]] || return 0
 
-  # If sources incorrectly point to /ubuntu/ instead of /ubuntu-ports/
   local changed=0
   if grep -Rqs "mirror\.hetzner\.com/ubuntu/security" /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null; then
     sed -i 's#mirror\.hetzner\.com/ubuntu/security#mirror.hetzner.com/ubuntu-ports/security#g' /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null || true
@@ -116,17 +122,13 @@ apt_fix_sources_if_needed() {
     sed -i 's#mirror\.hetzner\.com/ubuntu/packages#mirror.hetzner.com/ubuntu-ports/packages#g' /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null || true
     changed=1
   fi
-
-  if [[ "$changed" -eq 1 ]]; then
-    warn "ARM architecture detected; adjusted Hetzner sources to ubuntu-ports to avoid 404."
-  fi
+  [[ "$changed" -eq 1 ]] && warn "ARM detected; adjusted Hetzner sources to ubuntu-ports to avoid 404."
 }
 
 apt_update_retry() {
   export DEBIAN_FRONTEND=noninteractive
   local tries=3
-  local i=1
-  while (( i <= tries )); do
+  for i in $(seq 1 $tries); do
     log "apt update... (try $i/$tries)"
     set +e
     apt-get update -y 2>&1 | tee -a "$LOG_INSTALL" >/dev/null
@@ -135,20 +137,17 @@ apt_update_retry() {
     if [[ "$rc" -eq 0 ]]; then
       return 0
     fi
-    warn "apt update failed (rc=$rc). Attempting sources fix + retry..."
+    warn "apt update failed (rc=$rc). Fixing sources + retry..."
     apt_fix_sources_if_needed
     sleep $((i*2))
-    i=$((i+1))
   done
   return 1
 }
 
 apt_install() {
   export DEBIAN_FRONTEND=noninteractive
-
   apt_fix_sources_if_needed
-  apt_update_retry || die "apt update failed. Check /etc/apt/sources.list and network."
-
+  apt_update_retry || die "apt update failed. Check sources/network."
   log "Installing packages: wget curl screen net-tools iproute2 ping libpcap-dev perl..."
   apt-get install -y wget curl ca-certificates screen net-tools iproute2 iputils-ping libpcap-dev perl \
     2>&1 | tee -a "$LOG_INSTALL" >/dev/null
@@ -182,21 +181,10 @@ get_gateway_mac() {
   echo "$mac"
 }
 
-# ===== Download logic (multi-arch attempt) =====
-uname_arch() {
-  local m
-  m="$(uname -m 2>/dev/null || echo unknown)"
-  case "$m" in
-    x86_64|amd64) echo "amd64" ;;
-    aarch64|arm64) echo "arm64" ;;
-    armv7l|armhf) echo "armhf" ;;
-    *) echo "$m" ;;
-  esac
-}
-
+# ===== Download logic (multi-asset names, arch aware) =====
 download_with_retry() {
   local url="$1" out="$2"
-  local tries=6 wait=2
+  local tries=5 wait=2
   for i in $(seq 1 $tries); do
     log "Downloading ($i/$tries): $url"
     if wget -q --show-progress --timeout=20 --tries=2 "$url" -O "$out"; then
@@ -212,40 +200,53 @@ download_with_retry() {
 
 download_release_tarball() {
   mkdir -p "$ROOT_DIR"
+  local v="${PAQET_VERSION}"
+  local vnv="${PAQET_VERSION#v}" # no leading v
 
-  local arch
-  arch="$(uname_arch)"
-
-  # Candidate names (we try many so it works on any VPS hardware as long as asset exists)
+  # Candidate asset names (covers common GitHub release naming styles)
   local candidates=(
-    "paqet-linux-${arch}-${PAQET_VERSION}.tar.gz"
-    "paqet-linux-${arch}-${PAQET_VERSION#v}.tar.gz"
-    "paqet-linux-${arch}-v${PAQET_VERSION#v}.tar.gz"
-    "paqet-linux-amd64-${PAQET_VERSION}.tar.gz"
-    "paqet-linux-amd64-${PAQET_VERSION#v}.tar.gz"
-    "paqet-linux-amd64-v${PAQET_VERSION#v}.tar.gz"
-    "paqet-linux-arm64-${PAQET_VERSION}.tar.gz"
-    "paqet-linux-arm64-${PAQET_VERSION#v}.tar.gz"
-    "paqet-linux-aarch64-${PAQET_VERSION}.tar.gz"
-    "paqet-linux-aarch64-${PAQET_VERSION#v}.tar.gz"
+    "paqet-linux-${ARCH}-${v}.tar.gz"
+    "paqet-linux-${ARCH}-${vnv}.tar.gz"
+    "paqet-linux-${ARCH}-v${vnv}.tar.gz"
+    "paqet-linux-${ARCH}-${v}.tgz"
+    "paqet-linux-${ARCH}-${vnv}.tgz"
+    "paqet-linux-${ARCH}-v${vnv}.tgz"
   )
 
-  local tarball=""
+  # also accept amd64 binary if arch=amd64 and old releases use fixed "amd64"
+  if [[ "$ARCH" == "amd64" ]]; then
+    candidates+=(
+      "paqet-linux-amd64-${v}.tar.gz"
+      "paqet-linux-amd64-v${vnv}.tar.gz"
+      "paqet-linux-amd64-${vnv}.tar.gz"
+    )
+  fi
+
+  # also accept aarch64 alias when arch=arm64
+  if [[ "$ARCH" == "arm64" ]]; then
+    candidates+=(
+      "paqet-linux-aarch64-${v}.tar.gz"
+      "paqet-linux-aarch64-v${vnv}.tar.gz"
+      "paqet-linux-aarch64-${vnv}.tar.gz"
+    )
+  fi
+
+  local out=""
   for name in "${candidates[@]}"; do
     local url="${RELEASE_BASE}/${name}"
-    tarball="${ROOT_DIR}/${name}"
-    if [[ -f "$tarball" ]]; then
-      warn "Tarball already exists: $tarball"
-      echo "$tarball"
+    out="${ROOT_DIR}/${name}"
+    if [[ -f "$out" ]]; then
+      warn "Tarball already exists: $out"
+      echo "$out"
       return 0
     fi
-    if download_with_retry "$url" "$tarball"; then
-      echo "$tarball"
+    if download_with_retry "$url" "$out"; then
+      echo "$out"
       return 0
     fi
   done
 
-  die "Could not download paqet tarball for arch=$(uname -m). Set PAQET_VERSION or check release assets."
+  die "Could not download tarball for ARCH=${ARCH}. Check release assets or set PAQET_VERSION."
 }
 
 extract_and_prepare_binary() {
@@ -257,13 +258,29 @@ extract_and_prepare_binary() {
 
   log "Searching for paqet binary in extracted files..."
   local found=""
-  found="$(find "$EXTRACT_DIR" -maxdepth 5 -type f \( -name "paqet_linux_amd64" -o -name "paqet_linux_arm64" -o -name "paqet" -o -name "*paqet*" \) 2>/dev/null | head -n1 || true)"
-  [[ -z "$found" ]] && die "Could not find paqet binary inside extracted folder: $EXTRACT_DIR"
+  # find a file that is an executable ELF (best effort)
+  found="$(find "$EXTRACT_DIR" -maxdepth 5 -type f -name "paqet*" 2>/dev/null | head -n1 || true)"
+  [[ -n "$found" ]] || die "Could not find paqet binary in extracted folder."
 
-  # Keep stable name BIN_LOCAL
   cp -f "$found" "$BIN_LOCAL"
   chmod +x "$BIN_LOCAL"
-  ok "Binary ready: $BIN_LOCAL"
+
+  # Verify exec format before proceeding
+  if ! "$BIN_LOCAL" --help >/dev/null 2>&1; then
+    # not all binaries support --help; use file(1) check fallback
+    if command -v file >/dev/null 2>&1; then
+      local f; f="$(file "$BIN_LOCAL" || true)"
+      warn "Binary help check failed; file(): $f"
+      if echo "$f" | grep -qi "x86-64" && [[ "$ARCH" != "amd64" ]]; then
+        die "Binary is x86-64 but server arch is ${ARCH}. Wrong asset downloaded."
+      fi
+      if echo "$f" | grep -qiE "aarch64|ARM aarch64" && [[ "$ARCH" != "arm64" ]]; then
+        die "Binary is ARM64 but server arch is ${ARCH}. Wrong asset downloaded."
+      fi
+    fi
+  fi
+
+  ok "Binary ready: $BIN_LOCAL (ARCH=$ARCH)"
 }
 
 find_example_dir() {
@@ -277,7 +294,7 @@ find_example_dir() {
   echo "$d"
 }
 
-# ===== YAML edits (keep full template, change only requested parts) =====
+# ===== YAML edits =====
 set_interface_line() {
   local file="$1" iface="$2"
   sed -i "s/^\([[:space:]]*interface:[[:space:]]*\)\"[^\"]*\"/\1\"${iface}\"/" "$file"
@@ -288,12 +305,12 @@ set_router_mac_all_occurrences() {
   perl -0777 -i -pe "s/router_mac: \"[^\"]*\"/router_mac: \"$mac\"/g" "$file"
 }
 
-comment_ipv6_block() {
+comment_ipv6_block_requested_style() {
   local file="$1"
-  # Your requested style (comment header stays, three lines commented)
+  # specifically: keep header line, comment these 3 lines
   sed -i 's/^\([[:space:]]*\)ipv6:/\1#ipv6:/' "$file"
-  sed -i 's/^\([[:space:]]*\)addr: \"\[\(::1\|2001:db8::1\).*\"/\1#addr: "[::1]:9999"/' "$file" || true
-  sed -i 's/^\([[:space:]]*\)router_mac: \"[^\"]*\"/\1#router_mac: "aa:bb:cc:dd:ee:ff"/' "$file" || true
+  sed -i 's/^\([[:space:]]*\)addr: /\1#addr: /' "$file"
+  sed -i 's/^\([[:space:]]*\)router_mac: /\1#router_mac: /' "$file"
 }
 
 set_server_listen_port() {
@@ -304,7 +321,6 @@ set_server_listen_port() {
 
 set_server_ipv4_addr_public() {
   local file="$1" ip="$2" port="$3"
-  # Replace the example addr line
   sed -i "s/\"10\.0\.0\.100:9999\"/\"${ip}:${port}\"/" "$file"
   sed -i "s/^\([[:space:]]*addr:[[:space:]]*\)\"[0-9]\+\.[0-9]\+\.[0-9]\+\.[0-9]\+:[0-9]\+\"/\1\"${ip}:${port}\"/" "$file"
 }
@@ -316,13 +332,11 @@ set_secret_key() {
 
 disable_socks5_enable_forward_client() {
   local file="$1"
-  # Comment socks5 block
   sed -i 's/^socks5:/#socks5:/' "$file"
   sed -i 's/^[[:space:]]\{2\}- listen:/#  - listen:/' "$file"
   sed -i 's/^[[:space:]]\{4\}username:/#    username:/' "$file"
   sed -i 's/^[[:space:]]\{4\}password:/#    password:/' "$file"
 
-  # Enable forward block
   sed -i 's/^# forward:/forward:/' "$file"
   sed -i 's/^#   - listen:/  - listen:/' "$file"
   sed -i 's/^#     target:/    target:/' "$file"
@@ -373,7 +387,7 @@ start_in_screen() {
   ok "Screen started. Attach: screen -r ${SCREEN_NAME}"
 }
 
-# ===== watchdog (systemd timer preferred, cron fallback) =====
+# ===== watchdog =====
 write_watchdog_script() {
   cat > "$WATCHDOG_SH" <<'EOF'
 #!/usr/bin/env bash
@@ -391,7 +405,7 @@ wlog(){ echo "$(ts) [WD] $*" >> "$WD_LOG"; }
 
 screen_exists(){ screen -ls 2>/dev/null | grep -q "[[:space:]]${SCREEN_NAME}[[:space:]]"; }
 proc_running(){ pgrep -fa "${BIN} run -c ${CFG}" >/dev/null 2>&1; }
-killed_tail(){ tail -n 5 "$RUNTIME_LOG" 2>/dev/null | grep -qiE "(killed|out of memory|oom)"; }
+killed_tail(){ tail -n 10 "$RUNTIME_LOG" 2>/dev/null | grep -qiE "(killed|out of memory|oom)"; }
 
 restart() {
   wlog "Restarting... mode=${MODE} screen=${SCREEN_NAME}"
@@ -494,9 +508,8 @@ install_watchdog() {
     return 0
   fi
 
-  # auto
-  if command -v systemctl >/dev/null 2>&1 && systemctl is-system-running >/dev/null 2>&1; then
-    install_watchdog_systemd "$cfg"
+  if command -v systemctl >/dev/null 2>&1; then
+    install_watchdog_systemd "$cfg" || install_watchdog_cron "$cfg"
   else
     install_watchdog_cron "$cfg"
   fi
@@ -512,13 +525,14 @@ main() {
 
   log "==== Paqet Installer Started ===="
   log "Version: ${PAQET_VERSION}"
+  log "Arch   : ${ARCH}"
+  log "Binary : ${BIN_LOCAL}"
   log "Install log : ${LOG_INSTALL}"
   log "Runtime log : ${LOG_RUNTIME}"
   log "Input mode  : $(is_pipe_mode && echo 'PIPE (ENV required)' || echo 'TTY (interactive allowed)')"
 
   require_env_in_pipe
 
-  # If not pipe and missing vars, ask interactively (ONLY local/tty)
   if ! is_pipe_mode; then
     if [[ -z "$MODE" ]]; then
       log "Choose mode:"
@@ -572,7 +586,7 @@ main() {
   log "  localIPv4  = ${local_ip:-UNKNOWN}"
   log "  publicIPv4 = ${public_ip:-UNKNOWN}"
 
-  [[ -n "$gw_mac" ]] || die "Gateway MAC not detected. Set it manually (not supported in pipe unless you fix L2)."
+  [[ -n "$gw_mac" ]] || die "Gateway MAC not detected automatically."
 
   if [[ "$MODE" == "server" ]]; then
     local ip_final
@@ -588,7 +602,7 @@ main() {
     set_server_listen_port "$SERVER_YAML" "$TUNNEL_PORT"
     set_server_ipv4_addr_public "$SERVER_YAML" "$ip_final" "$TUNNEL_PORT"
     set_router_mac_all_occurrences "$SERVER_YAML" "$gw_mac"
-    [[ "$FORCE_IPV6_DISABLE" == "1" ]] && comment_ipv6_block "$SERVER_YAML"
+    [[ "$FORCE_IPV6_DISABLE" == "1" ]] && comment_ipv6_block_requested_style "$SERVER_YAML"
     set_secret_key "$SERVER_YAML" "$SECRET"
     ok "server.yaml ready."
 
@@ -598,9 +612,10 @@ main() {
     fi
 
     ok "DONE (Outside Server)."
-    log "Config: $SERVER_YAML"
-    log "Attach: screen -r ${SCREEN_NAME}"
-    log "Runtime log: $LOG_RUNTIME"
+    log "Config      : $SERVER_YAML"
+    log "Attach      : screen -r ${SCREEN_NAME}"
+    log "Runtime log : $LOG_RUNTIME"
+    log "Watchdog log: $LOG_WATCHDOG"
     exit 0
   fi
 
@@ -617,7 +632,7 @@ main() {
   set_interface_line "$CLIENT_YAML" "$iface"
   set_client_ipv4_addr_local "$CLIENT_YAML" "$lip_final"
   set_router_mac_all_occurrences "$CLIENT_YAML" "$gw_mac"
-  [[ "$FORCE_IPV6_DISABLE" == "1" ]] && comment_ipv6_block "$CLIENT_YAML"
+  [[ "$FORCE_IPV6_DISABLE" == "1" ]] && comment_ipv6_block_requested_style "$CLIENT_YAML"
   disable_socks5_enable_forward_client "$CLIENT_YAML"
   set_forward_listen_target_client "$CLIENT_YAML" "$SERVICE_PORT" "$OUTSIDE_IP"
   set_client_server_addr "$CLIENT_YAML" "$OUTSIDE_IP" "$TUNNEL_PORT"
@@ -630,8 +645,9 @@ main() {
   fi
 
   ok "DONE (Iran Client)."
-  log "Config: $CLIENT_YAML"
-  log "Attach: screen -r ${SCREEN_NAME}"
-  log "Runtime log: $LOG_RUNTIME"
+  log "Config      : $CLIENT_YAML"
+  log "Attach      : screen -r ${SCREEN_NAME}"
+  log "Runtime log : $LOG_RUNTIME"
+  log "Watchdog log: $LOG_WATCHDOG"
 }
 main "$@"
