@@ -411,6 +411,9 @@ start_in_screen() {
   screen -dmS "$SCREEN_NAME" bash -lc "
     cd '$ROOT_DIR'
     echo '--- $(ts) START ${mode} ---' >> '$LOG_RUNTIME'
+    if command -v apt-get >/dev/null 2>&1; then
+      apt-get install -y libpcap-dev >/dev/null 2>&1 || true
+    fi
     chmod +x '$BIN_LOCAL'
     '$BIN_LOCAL' run -c '$cfg' 2>&1 | tee -a '$LOG_RUNTIME'
     echo '--- $(ts) STOP ${mode} (process ended) ---' >> '$LOG_RUNTIME'
@@ -536,6 +539,7 @@ main() {
 
     [[ -n "${SECRET:-}" ]]      || prompt SECRET "Secret key (must match both sides)" "change-me-please"
     [[ -n "${TUNNEL_PORT:-}" ]] || prompt TUNNEL_PORT "Tunnel port" "9999"
+    [[ -n "${SCREEN_NAME:-}" ]] || prompt SCREEN_NAME "Screen session name" "${SCREEN_NAME}"
 
     if [[ "${MODE}" == "client" ]]; then
       [[ -n "${OUTSIDE_IP:-}" ]]   || prompt OUTSIDE_IP "Outside server PUBLIC IPv4" ""

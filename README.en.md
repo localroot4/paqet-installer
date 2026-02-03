@@ -89,6 +89,7 @@ MODE=client SECRET='change-me' TUNNEL_PORT=9999 SERVICE_PORT=8080 OUTSIDE_IP='1.
 - `PUBLIC_IP='x.x.x.x'` (server; optional override)
 - `LOCAL_IP='x.x.x.x'` (client; optional override)
 - `SCREEN_NAME=LR4-paqet`
+- `SCREEN_NAME` can be set to choose the screen session name (prompted in interactive mode).
 - `AUTO_START=1|0`
 - `AUTO_ATTACH=1|0` (auto-attach to screen at the end when TTY is available)
 - `SKIP_PKG_INSTALL=1|0` (skip dependency installation if set to 1)
