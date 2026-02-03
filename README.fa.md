@@ -37,6 +37,30 @@ sudo ./install.sh
 
 ---
 
+## دستورهای تک‌خطی
+
+### تعامل‌پذیر (همه سوال‌ها را می‌پرسد)
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/localroot4/paqet-installer/main/install.sh)
+```
+
+### بدون تعامل با ENV (تک‌خطی)
+
+**سرور خارج:**
+
+```bash
+MODE=server SECRET='change-me' TUNNEL_PORT=9999 bash <(curl -fsSL https://raw.githubusercontent.com/localroot4/paqet-installer/main/install.sh)
+```
+
+**کلاینت ایران:**
+
+```bash
+MODE=client SECRET='change-me' TUNNEL_PORT=9999 SERVICE_PORT=8080 OUTSIDE_IP='1.2.3.4' bash <(curl -fsSL https://raw.githubusercontent.com/localroot4/paqet-installer/main/install.sh)
+```
+
+---
+
 ## شروع سریع (بدون تعامل / Pipe)
 
 اگر با `curl | bash` اجرا می‌کنید باید متغیرها را بدهید:

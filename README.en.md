@@ -37,6 +37,30 @@ The script will ask:
 
 ---
 
+## One-Line Commands
+
+### Interactive (asks all questions)
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/localroot4/paqet-installer/main/install.sh)
+```
+
+### Non-Interactive with ENV (single line)
+
+**Server (Outside):**
+
+```bash
+MODE=server SECRET='change-me' TUNNEL_PORT=9999 bash <(curl -fsSL https://raw.githubusercontent.com/localroot4/paqet-installer/main/install.sh)
+```
+
+**Client (Iran):**
+
+```bash
+MODE=client SECRET='change-me' TUNNEL_PORT=9999 SERVICE_PORT=8080 OUTSIDE_IP='1.2.3.4' bash <(curl -fsSL https://raw.githubusercontent.com/localroot4/paqet-installer/main/install.sh)
+```
+
+---
+
 ## Quick Start (Non-Interactive / Pipe Mode)
 
 When running via `curl | bash`, you must pass required variables:
