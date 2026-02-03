@@ -14,33 +14,31 @@ set -Eeuo pipefail
 # - Written by Atil (LR4) / localroot4
 ############################################
 
-# ===== Defaults (override via ENV) =====
-PAQET_VERSION="${PAQET_VERSION:-v1.0.0-alpha.11}"   # ex: v1.0.0-alpha.11
-MODE="${MODE:-}"                                    # server | client (REQUIRED in pipe mode)
-TUNNEL_PORT="${TUNNEL_PORT:-9999}"
-SERVICE_PORT="${SERVICE_PORT:-8080}"                # client only
-OUTSIDE_IP="${OUTSIDE_IP:-}"                        # client only
-PUBLIC_IP="${PUBLIC_IP:-}"                          # server only (optional)
-LOCAL_IP="${LOCAL_IP:-}"                            # client only (optional)
-SECRET="${SECRET:-}"                                # REQUIRED in pipe mode
-SCREEN_NAME="${SCREEN_NAME:-LR4-paqet}"
-AUTO_START="${AUTO_START:-1}"                       # 1=run in screen automatically
-WATCHDOG="${WATCHDOG:-1}"                           # 1=enable watchdog
-WATCHDOG_METHOD="${WATCHDOG_METHOD:-auto}"          # auto | cron | systemd
-FORCE_IPV6_DISABLE="${FORCE_IPV6_DISABLE:-1}"       # 1=comment ipv6 block as requested
+# ===== Hard init (prevents "unbound variable" with set -u) =====
+: "${PAQET_VERSION:=v1.0.0-alpha.11}"
+: "${MODE:=}"            # server | client
+: "${TUNNEL_PORT:=9999}"
+: "${SERVICE_PORT:=8080}"
+: "${OUTSIDE_IP:=}"
+: "${PUBLIC_IP:=}"
+: "${LOCAL_IP:=}"
+: "${SECRET:=}"
+: "${SCREEN_NAME:=LR4-paqet}"
+: "${AUTO_START:=1}"
+: "${WATCHDOG:=1}"
+: "${WATCHDOG_METHOD:=auto}"  # auto | cron | systemd
+: "${FORCE_IPV6_DISABLE:=1}"
 
 # ===== Paths =====
 ROOT_DIR="/root"
 LOG_INSTALL="${ROOT_DIR}/paqet-install.log"
 LOG_RUNTIME="${ROOT_DIR}/paqet-runtime.log"
 LOG_WATCHDOG="${ROOT_DIR}/paqet-watchdog.log"
-
 EXTRACT_DIR="${ROOT_DIR}/paqet"
 SERVER_YAML="${ROOT_DIR}/server.yaml"
 CLIENT_YAML="${ROOT_DIR}/client.yaml"
 WATCHDOG_SH="${ROOT_DIR}/paqet-watchdog.sh"
 
-# ===== Release base =====
 RELEASE_BASE="https://github.com/hanselime/paqet/releases/download/${PAQET_VERSION}"
 
 # ===== Pretty logs =====
@@ -55,26 +53,23 @@ die()  { err "$*"; exit 1; }
 on_error() {
   local code=$?
   err "Installer failed (exit code: $code)."
-  err "Last 120 install log lines:"
-  tail -n 120 "$LOG_INSTALL" 2>/dev/null || true
+  err "Last 200 install log lines:"
+  tail -n 200 "$LOG_INSTALL" 2>/dev/null || true
   exit "$code"
 }
 trap on_error ERR
 
-need_root() {
-  [[ "${EUID}" -eq 0 ]] || die "Run as root. (sudo -i)"
-}
-
+need_root() { [[ "${EUID}" -eq 0 ]] || die "Run as root. (sudo -i)"; }
 is_pipe_mode() { [[ ! -t 0 ]]; }
 has_tty() { [[ -t 0 && -t 1 ]]; }
 
 # ===== Strict rule: NO prompts in pipe mode =====
 require_env_in_pipe() {
   if is_pipe_mode; then
-    [[ -n "${MODE}" ]] || die "PIPE mode detected. Set MODE=server or MODE=client. (No interactive prompts in pipe mode)"
-    [[ -n "${SECRET}" ]] || die "PIPE mode detected. Set SECRET='...'. (No interactive prompts in pipe mode)"
+    [[ -n "${MODE:-}" ]]   || die "PIPE mode detected. Set MODE=server or MODE=client (no prompts in pipe mode)."
+    [[ -n "${SECRET:-}" ]] || die "PIPE mode detected. Set SECRET='...' (no prompts in pipe mode)."
     if [[ "${MODE}" == "client" ]]; then
-      [[ -n "${OUTSIDE_IP}" ]] || die "MODE=client requires OUTSIDE_IP='x.x.x.x' in pipe mode."
+      [[ -n "${OUTSIDE_IP:-}" ]] || die "MODE=client requires OUTSIDE_IP='x.x.x.x' in pipe mode."
     fi
   fi
 }
@@ -95,9 +90,7 @@ prompt() {
 detect_arch() {
   local a=""
   a="$(dpkg --print-architecture 2>/dev/null || true)"
-  if [[ -z "$a" ]]; then
-    a="$(uname -m 2>/dev/null || echo unknown)"
-  fi
+  [[ -n "$a" ]] || a="$(uname -m 2>/dev/null || echo unknown)"
   case "$a" in
     amd64|x86_64) echo "amd64" ;;
     arm64|aarch64) echo "arm64" ;;
@@ -105,7 +98,6 @@ detect_arch() {
     *) echo "$a" ;;
   esac
 }
-
 ARCH="$(detect_arch)"
 BIN_LOCAL="${ROOT_DIR}/paqet_linux_${ARCH}"
 
@@ -148,8 +140,8 @@ apt_install() {
   export DEBIAN_FRONTEND=noninteractive
   apt_fix_sources_if_needed
   apt_update_retry || die "apt update failed. Check sources/network."
-  log "Installing packages: wget curl screen net-tools iproute2 ping libpcap-dev perl..."
-  apt-get install -y wget curl ca-certificates screen net-tools iproute2 iputils-ping libpcap-dev perl \
+  log "Installing packages: wget curl screen net-tools iproute2 ping libpcap-dev perl file..."
+  apt-get install -y wget curl ca-certificates screen net-tools iproute2 iputils-ping libpcap-dev perl file \
     2>&1 | tee -a "$LOG_INSTALL" >/dev/null
   ok "Packages installed."
 }
@@ -181,7 +173,7 @@ get_gateway_mac() {
   echo "$mac"
 }
 
-# ===== Download logic (multi-asset names, arch aware) =====
+# ===== Download logic =====
 download_with_retry() {
   local url="$1" out="$2"
   local tries=5 wait=2
@@ -201,28 +193,17 @@ download_with_retry() {
 download_release_tarball() {
   mkdir -p "$ROOT_DIR"
   local v="${PAQET_VERSION}"
-  local vnv="${PAQET_VERSION#v}" # no leading v
+  local vnv="${PAQET_VERSION#v}"
 
-  # Candidate asset names (covers common GitHub release naming styles)
   local candidates=(
     "paqet-linux-${ARCH}-${v}.tar.gz"
-    "paqet-linux-${ARCH}-${vnv}.tar.gz"
     "paqet-linux-${ARCH}-v${vnv}.tar.gz"
+    "paqet-linux-${ARCH}-${vnv}.tar.gz"
     "paqet-linux-${ARCH}-${v}.tgz"
-    "paqet-linux-${ARCH}-${vnv}.tgz"
     "paqet-linux-${ARCH}-v${vnv}.tgz"
+    "paqet-linux-${ARCH}-${vnv}.tgz"
   )
 
-  # also accept amd64 binary if arch=amd64 and old releases use fixed "amd64"
-  if [[ "$ARCH" == "amd64" ]]; then
-    candidates+=(
-      "paqet-linux-amd64-${v}.tar.gz"
-      "paqet-linux-amd64-v${vnv}.tar.gz"
-      "paqet-linux-amd64-${vnv}.tar.gz"
-    )
-  fi
-
-  # also accept aarch64 alias when arch=arm64
   if [[ "$ARCH" == "arm64" ]]; then
     candidates+=(
       "paqet-linux-aarch64-${v}.tar.gz"
@@ -258,26 +239,21 @@ extract_and_prepare_binary() {
 
   log "Searching for paqet binary in extracted files..."
   local found=""
-  # find a file that is an executable ELF (best effort)
   found="$(find "$EXTRACT_DIR" -maxdepth 5 -type f -name "paqet*" 2>/dev/null | head -n1 || true)"
   [[ -n "$found" ]] || die "Could not find paqet binary in extracted folder."
 
   cp -f "$found" "$BIN_LOCAL"
   chmod +x "$BIN_LOCAL"
 
-  # Verify exec format before proceeding
-  if ! "$BIN_LOCAL" --help >/dev/null 2>&1; then
-    # not all binaries support --help; use file(1) check fallback
-    if command -v file >/dev/null 2>&1; then
-      local f; f="$(file "$BIN_LOCAL" || true)"
-      warn "Binary help check failed; file(): $f"
-      if echo "$f" | grep -qi "x86-64" && [[ "$ARCH" != "amd64" ]]; then
-        die "Binary is x86-64 but server arch is ${ARCH}. Wrong asset downloaded."
-      fi
-      if echo "$f" | grep -qiE "aarch64|ARM aarch64" && [[ "$ARCH" != "arm64" ]]; then
-        die "Binary is ARM64 but server arch is ${ARCH}. Wrong asset downloaded."
-      fi
-    fi
+  local finfo
+  finfo="$(file "$BIN_LOCAL" 2>/dev/null || true)"
+  log "Binary file(): ${finfo}"
+
+  if [[ "$ARCH" == "arm64" ]] && echo "$finfo" | grep -qi "x86-64"; then
+    die "Wrong binary (x86-64) on arm64. Release asset naming mismatch."
+  fi
+  if [[ "$ARCH" == "amd64" ]] && echo "$finfo" | grep -qiE "aarch64|ARM aarch64"; then
+    die "Wrong binary (arm64) on amd64. Release asset naming mismatch."
   fi
 
   ok "Binary ready: $BIN_LOCAL (ARCH=$ARCH)"
@@ -307,7 +283,6 @@ set_router_mac_all_occurrences() {
 
 comment_ipv6_block_requested_style() {
   local file="$1"
-  # specifically: keep header line, comment these 3 lines
   sed -i 's/^\([[:space:]]*\)ipv6:/\1#ipv6:/' "$file"
   sed -i 's/^\([[:space:]]*\)addr: /\1#addr: /' "$file"
   sed -i 's/^\([[:space:]]*\)router_mac: /\1#router_mac: /' "$file"
@@ -392,17 +367,11 @@ write_watchdog_script() {
   cat > "$WATCHDOG_SH" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
-
-MODE="${1:-}"
-SCREEN_NAME="${2:-}"
-BIN="${3:-}"
-CFG="${4:-}"
+MODE="${1:-}"; SCREEN_NAME="${2:-}"; BIN="${3:-}"; CFG="${4:-}"
 RUNTIME_LOG="${5:-/root/paqet-runtime.log}"
 WD_LOG="${6:-/root/paqet-watchdog.log}"
-
 ts(){ date +"%Y-%m-%d %H:%M:%S"; }
 wlog(){ echo "$(ts) [WD] $*" >> "$WD_LOG"; }
-
 screen_exists(){ screen -ls 2>/dev/null | grep -q "[[:space:]]${SCREEN_NAME}[[:space:]]"; }
 proc_running(){ pgrep -fa "${BIN} run -c ${CFG}" >/dev/null 2>&1; }
 killed_tail(){ tail -n 10 "$RUNTIME_LOG" 2>/dev/null | grep -qiE "(killed|out of memory|oom)"; }
@@ -427,25 +396,10 @@ restart() {
 
 main(){
   [[ -n "$MODE" && -n "$SCREEN_NAME" && -n "$BIN" && -n "$CFG" ]] || exit 0
-
-  if proc_running; then
-    exit 0
-  fi
-
-  if killed_tail; then
-    wlog "Detected killed/OOM in runtime log tail."
-    restart
-    exit 0
-  fi
-
-  if ! screen_exists; then
-    wlog "Screen session missing."
-    restart
-    exit 0
-  fi
-
-  wlog "Process not running. Restarting."
-  restart
+  if proc_running; then exit 0; fi
+  if killed_tail; then wlog "Detected killed/OOM."; restart; exit 0; fi
+  if ! screen_exists; then wlog "Screen missing."; restart; exit 0; fi
+  wlog "Process not running. Restarting."; restart
 }
 main
 EOF
@@ -455,35 +409,29 @@ EOF
 
 install_watchdog_systemd() {
   local cfg="$1"
-  local svc="/etc/systemd/system/paqet-watchdog.service"
-  local tmr="/etc/systemd/system/paqet-watchdog.timer"
-
-  cat > "$svc" <<EOF
+  cat > /etc/systemd/system/paqet-watchdog.service <<EOF
 [Unit]
 Description=Paqet Watchdog (LR4)
 After=network.target
-
 [Service]
 Type=oneshot
 ExecStart=${WATCHDOG_SH} ${MODE} ${SCREEN_NAME} ${BIN_LOCAL} ${cfg} ${LOG_RUNTIME} ${LOG_WATCHDOG}
 EOF
 
-  cat > "$tmr" <<EOF
+  cat > /etc/systemd/system/paqet-watchdog.timer <<EOF
 [Unit]
 Description=Run Paqet Watchdog every 1 minute
-
 [Timer]
 OnBootSec=30
 OnUnitActiveSec=60
 AccuracySec=5
-
 [Install]
 WantedBy=timers.target
 EOF
 
   systemctl daemon-reload
   systemctl enable --now paqet-watchdog.timer >/dev/null 2>&1 || true
-  ok "Watchdog enabled via systemd timer: paqet-watchdog.timer"
+  ok "Watchdog enabled via systemd timer."
 }
 
 install_watchdog_cron() {
@@ -495,32 +443,17 @@ install_watchdog_cron() {
 
 install_watchdog() {
   local cfg="$1"
-  [[ "$WATCHDOG" == "1" ]] || { warn "WATCHDOG=0 (skipped)"; return 0; }
-
+  [[ "${WATCHDOG}" == "1" ]] || { warn "WATCHDOG=0 (skipped)"; return 0; }
   write_watchdog_script
-
-  if [[ "$WATCHDOG_METHOD" == "systemd" ]]; then
-    install_watchdog_systemd "$cfg"
-    return 0
-  fi
-  if [[ "$WATCHDOG_METHOD" == "cron" ]]; then
-    install_watchdog_cron "$cfg"
-    return 0
-  fi
-
-  if command -v systemctl >/dev/null 2>&1; then
-    install_watchdog_systemd "$cfg" || install_watchdog_cron "$cfg"
-  else
-    install_watchdog_cron "$cfg"
+  if [[ "${WATCHDOG_METHOD}" == "systemd" ]]; then install_watchdog_systemd "$cfg"; return 0; fi
+  if [[ "${WATCHDOG_METHOD}" == "cron" ]]; then install_watchdog_cron "$cfg"; return 0; fi
+  if command -v systemctl >/dev/null 2>&1; then install_watchdog_systemd "$cfg" || install_watchdog_cron "$cfg"
+  else install_watchdog_cron "$cfg"
   fi
 }
 
-# ===== main =====
 main() {
-  : > "$LOG_INSTALL"
-  : >> "$LOG_RUNTIME"
-  : >> "$LOG_WATCHDOG"
-
+  : > "$LOG_INSTALL"; : >> "$LOG_RUNTIME"; : >> "$LOG_WATCHDOG"
   need_root
 
   log "==== Paqet Installer Started ===="
@@ -534,7 +467,7 @@ main() {
   require_env_in_pipe
 
   if ! is_pipe_mode; then
-    if [[ -z "$MODE" ]]; then
+    if [[ -z "${MODE:-}" ]]; then
       log "Choose mode:"
       echo "  1) Outside Server  (server.yaml + run in screen)"
       echo "  2) Iran Client     (client.yaml + forward + run in screen)"
@@ -544,36 +477,38 @@ main() {
       [[ "$choice" == "1" ]] && MODE="server" || MODE="client"
     fi
 
-    [[ -n "$SECRET" ]] || prompt SECRET "Secret key (must match both sides)" "change-me-please"
-    [[ -n "$TUNNEL_PORT" ]] || prompt TUNNEL_PORT "Tunnel port" "9999"
+    [[ -n "${SECRET:-}" ]]      || prompt SECRET "Secret key (must match both sides)" "change-me-please"
+    [[ -n "${TUNNEL_PORT:-}" ]] || prompt TUNNEL_PORT "Tunnel port" "9999"
 
-    if [[ "$MODE" == "client" ]]; then
-      [[ -n "$OUTSIDE_IP" ]] || prompt OUTSIDE_IP "Outside server PUBLIC IPv4" ""
-      [[ -n "$SERVICE_PORT" ]] || prompt SERVICE_PORT "Service port to expose (0.0.0.0:PORT)" "8080"
+    if [[ "${MODE}" == "client" ]]; then
+      [[ -n "${OUTSIDE_IP:-}" ]]   || prompt OUTSIDE_IP "Outside server PUBLIC IPv4" ""
+      [[ -n "${SERVICE_PORT:-}" ]] || prompt SERVICE_PORT "Service port to expose (0.0.0.0:PORT)" "8080"
     fi
   fi
 
-  [[ "$MODE" == "server" || "$MODE" == "client" ]] || die "Invalid MODE. Use MODE=server or MODE=client"
-  [[ -n "$SECRET" ]] || die "SECRET is required."
-  [[ "$MODE" != "client" || -n "$OUTSIDE_IP" ]] || die "MODE=client requires OUTSIDE_IP."
+  # ---- VALIDATION (safe with set -u) ----
+  log "Validating inputs..."
+  [[ "${MODE:-}" == "server" || "${MODE:-}" == "client" ]] || die "Invalid MODE. Use server/client."
+  [[ -n "${SECRET:-}" ]] || die "SECRET is required."
+  if [[ "${MODE}" == "client" ]]; then
+    [[ -n "${OUTSIDE_IP:-}" ]] || die "MODE=client requires OUTSIDE_IP."
+  fi
+  ok "Inputs OK. (MODE=${MODE}, TUNNEL_PORT=${TUNNEL_PORT}, SERVICE_PORT=${SERVICE_PORT})"
 
   apt_install
 
-  local tarball
-  tarball="$(download_release_tarball)"
+  local tarball; tarball="$(download_release_tarball)"
   extract_and_prepare_binary "$tarball"
 
-  local example_dir
-  example_dir="$(find_example_dir)"
-  [[ -n "$example_dir" ]] || die "Could not find example directory inside extracted files."
+  local example_dir; example_dir="$(find_example_dir)"
+  [[ -n "$example_dir" ]] || die "Could not find example directory."
   ok "Found example dir: $example_dir"
 
   log "Detecting network info..."
   local iface gw gw_mac local_ip public_ip
-  iface="$(get_default_if)"
-  gw="$(get_gateway_ip)"
+  iface="$(get_default_if)"; gw="$(get_gateway_ip)"
   [[ -n "$iface" ]] || die "No default interface detected. (ip r)"
-  [[ -n "$gw" ]] || die "No default gateway detected. (ip r)"
+  [[ -n "$gw" ]]    || die "No default gateway detected. (ip r)"
 
   gw_mac="$(get_gateway_mac "$gw" || true)"
   local_ip="$(get_local_ipv4 "$iface" || true)"
@@ -585,19 +520,17 @@ main() {
   log "  gatewayMAC = ${gw_mac:-UNKNOWN}"
   log "  localIPv4  = ${local_ip:-UNKNOWN}"
   log "  publicIPv4 = ${public_ip:-UNKNOWN}"
-
   [[ -n "$gw_mac" ]] || die "Gateway MAC not detected automatically."
 
   if [[ "$MODE" == "server" ]]; then
-    local ip_final
-    ip_final="${PUBLIC_IP:-$public_ip}"
+    local ip_final="${PUBLIC_IP:-$public_ip}"
     [[ -n "$ip_final" ]] || die "Public IPv4 not detected. Set PUBLIC_IP='x.x.x.x'."
 
     log "Copying FULL server example -> ${SERVER_YAML}"
     cp -f "${example_dir}/server.yaml.example" "$SERVER_YAML"
     ok "Copied full template: $SERVER_YAML"
 
-    log "Applying ONLY requested edits to server.yaml..."
+    log "Applying requested edits to server.yaml..."
     set_interface_line "$SERVER_YAML" "$iface"
     set_server_listen_port "$SERVER_YAML" "$TUNNEL_PORT"
     set_server_ipv4_addr_public "$SERVER_YAML" "$ip_final" "$TUNNEL_PORT"
@@ -620,15 +553,14 @@ main() {
   fi
 
   # MODE=client
-  local lip_final
-  lip_final="${LOCAL_IP:-$local_ip}"
+  local lip_final="${LOCAL_IP:-$local_ip}"
   [[ -n "$lip_final" ]] || die "Local IPv4 not detected. Set LOCAL_IP='x.x.x.x'."
 
   log "Copying FULL client example -> ${CLIENT_YAML}"
   cp -f "${example_dir}/client.yaml.example" "$CLIENT_YAML"
   ok "Copied full template: $CLIENT_YAML"
 
-  log "Applying ONLY requested edits to client.yaml..."
+  log "Applying requested edits to client.yaml..."
   set_interface_line "$CLIENT_YAML" "$iface"
   set_client_ipv4_addr_local "$CLIENT_YAML" "$lip_final"
   set_router_mac_all_occurrences "$CLIENT_YAML" "$gw_mac"
