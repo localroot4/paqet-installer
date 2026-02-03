@@ -17,13 +17,14 @@ set -Eeuo pipefail
 # ===== Hard init (prevents "unbound variable" with set -u) =====
 : "${PAQET_VERSION:=v1.0.0-alpha.11}"
 : "${MODE:=}"            # server | client
-: "${TUNNEL_PORT:=9999}"
-: "${SERVICE_PORT:=8080}"
+: "${TUNNEL_PORT:=}"
+: "${SERVICE_PORT:=}"
 : "${OUTSIDE_IP:=}"
 : "${PUBLIC_IP:=}"
 : "${LOCAL_IP:=}"
 : "${SECRET:=}"
-: "${SCREEN_NAME:=LR4-paqet}"
+: "${SCREEN_NAME:=}"
+: "${KEEP_SCREEN_OPEN:=1}"
 : "${AUTO_START:=1}"
 : "${AUTO_ATTACH:=1}"
 : "${SKIP_PKG_INSTALL:=0}"
@@ -340,21 +341,23 @@ set_router_mac_all_occurrences() {
 
 comment_ipv6_block_requested_style() {
   local file="$1"
-  sed -i 's/^\([[:space:]]*\)ipv6:/\1#ipv6:/' "$file"
-  sed -i 's/^\([[:space:]]*\)addr: /\1#addr: /' "$file"
-  sed -i 's/^\([[:space:]]*\)router_mac: /\1#router_mac: /' "$file"
+  perl -i -pe '
+    if (/^\s*ipv6:/) { $in=1; s/^(\s*)ipv6:/$1#ipv6:/; next; }
+    if ($in && /^\s*addr:/) { s/^(\s*)addr:/$1#addr:/; next; }
+    if ($in && /^\s*router_mac:/) { s/^(\s*)router_mac:/$1#router_mac:/; $in=0; next; }
+    if ($in && /^\s*\S/ && !/^\s*#/) { $in=0; }
+  ' "$file"
 }
 
 set_server_listen_port() {
   local file="$1" port="$2"
-  sed -i "s/^\([[:space:]]*addr:[[:space:]]*\)\":9999\"/\1\":${port}\"/" "$file"
-  sed -i "s/^\([[:space:]]*addr:[[:space:]]*\)\":\([0-9]\+\)\"/\1\":${port}\"/" "$file"
+  sed -i -E "s/^([[:space:]]*)#?[[:space:]]*addr:[[:space:]]*\":[0-9]+\"/\1addr: \":${port}\"/" "$file"
 }
 
 set_server_ipv4_addr_public() {
   local file="$1" ip="$2" port="$3"
   sed -i "s/\"10\.0\.0\.100:9999\"/\"${ip}:${port}\"/" "$file"
-  sed -i "s/^\([[:space:]]*addr:[[:space:]]*\)\"[0-9]\+\.[0-9]\+\.[0-9]\+\.[0-9]\+:[0-9]\+\"/\1\"${ip}:${port}\"/" "$file"
+  sed -i "s/^[[:space:]]*#\?[[:space:]]*addr:[[:space:]]*\"[0-9]\+\.[0-9]\+\.[0-9]\+\.[0-9]\+:[0-9]\+\"/    addr: \"${ip}:${port}\"/" "$file"
 }
 
 set_secret_key() {
@@ -417,6 +420,10 @@ start_in_screen() {
     chmod +x '$BIN_LOCAL'
     '$BIN_LOCAL' run -c '$cfg' 2>&1 | tee -a '$LOG_RUNTIME'
     echo '--- $(ts) STOP ${mode} (process ended) ---' >> '$LOG_RUNTIME'
+    if [[ '${KEEP_SCREEN_OPEN}' == '1' ]]; then
+      echo 'Process ended. Keeping screen open for debugging...' | tee -a '$LOG_RUNTIME'
+      exec bash
+    fi
     sleep 2
   "
   ok "Screen started. Attach: screen -r ${SCREEN_NAME}"
@@ -537,17 +544,26 @@ main() {
       [[ "$choice" == "1" ]] && MODE="server" || MODE="client"
     fi
 
-    [[ -n "${SECRET:-}" ]]      || prompt SECRET "Secret key (must match both sides)" "change-me-please"
-    [[ -n "${TUNNEL_PORT:-}" ]] || prompt TUNNEL_PORT "Tunnel port" "9999"
-    [[ -n "${SCREEN_NAME:-}" ]] || prompt SCREEN_NAME "Screen session name" "${SCREEN_NAME}"
+    [[ -n "${SECRET:-}" ]] || prompt SECRET "Secret key (must match both sides)" "change-me-please"
+    if [[ -z "${TUNNEL_PORT:-}" ]]; then
+      prompt TUNNEL_PORT "Tunnel port" "9999"
+    fi
+    if [[ -z "${SCREEN_NAME:-}" ]]; then
+      prompt SCREEN_NAME "Screen session name" "LR4-paqet"
+    fi
 
     if [[ "${MODE}" == "client" ]]; then
-      [[ -n "${OUTSIDE_IP:-}" ]]   || prompt OUTSIDE_IP "Outside server PUBLIC IPv4" ""
-      [[ -n "${SERVICE_PORT:-}" ]] || prompt SERVICE_PORT "Service port to expose (0.0.0.0:PORT)" "8080"
+      [[ -n "${OUTSIDE_IP:-}" ]] || prompt OUTSIDE_IP "Outside server PUBLIC IPv4" ""
+      if [[ -z "${SERVICE_PORT:-}" ]]; then
+        prompt SERVICE_PORT "Service port to expose (0.0.0.0:PORT)" "8080"
+      fi
     fi
   fi
 
   # ---- VALIDATION (safe with set -u) ----
+  TUNNEL_PORT="${TUNNEL_PORT:-9999}"
+  SERVICE_PORT="${SERVICE_PORT:-8080}"
+  SCREEN_NAME="${SCREEN_NAME:-LR4-paqet}"
   log "Validating inputs..."
   [[ "${MODE:-}" == "server" || "${MODE:-}" == "client" ]] || die "Invalid MODE. Use server/client."
   [[ -n "${SECRET:-}" ]] || die "SECRET is required."
