@@ -612,6 +612,10 @@ main() {
         prompt SCREEN_NAME "Screen session name" "LR4-paqet"
       fi
       CLIENT_COUNT="1"
+      export "OUTSIDE_IP_${CLIENT_START_INDEX}=${OUTSIDE_IP}"
+      export "SERVICE_PORT_${CLIENT_START_INDEX}=${SERVICE_PORT}"
+      export "TUNNEL_PORT_${CLIENT_START_INDEX}=${TUNNEL_PORT}"
+      export "SCREEN_NAME_${CLIENT_START_INDEX}=${SCREEN_NAME}"
     fi
   fi
 
