@@ -29,6 +29,7 @@ set -Eeuo pipefail
 : "${AUTO_ATTACH:=1}"
 : "${SKIP_PKG_INSTALL:=0}"
 : "${CLIENT_COUNT:=1}"
+: "${CLIENT_START_INDEX:=1}"
 : "${WATCHDOG:=1}"
 : "${WATCHDOG_METHOD:=auto}"  # auto | cron | systemd
 : "${FORCE_IPV6_DISABLE:=1}"
@@ -585,8 +586,11 @@ main() {
     fi
 
     if [[ "${MODE}" == "client" ]]; then
-      if [[ -z "${CLIENT_COUNT:-}" ]]; then
-        prompt CLIENT_COUNT "How many Iran clients? (1-3)" "1"
+      if [[ -z "${CLIENT_COUNT:-}" && -z "${CLIENT_START_INDEX:-}" ]]; then
+        prompt CLIENT_START_INDEX "Which Iran client number? (1-4)" "1"
+        CLIENT_COUNT="1"
+      elif [[ -z "${CLIENT_COUNT:-}" ]]; then
+        prompt CLIENT_COUNT "How many Iran clients? (1-4)" "1"
       fi
     fi
   fi
@@ -596,11 +600,13 @@ main() {
   SERVICE_PORT="${SERVICE_PORT:-8080}"
   SCREEN_NAME="${SCREEN_NAME:-LR4-paqet}"
   CLIENT_COUNT="${CLIENT_COUNT:-1}"
+  CLIENT_START_INDEX="${CLIENT_START_INDEX:-1}"
   log "Validating inputs..."
   [[ "${MODE:-}" == "server" || "${MODE:-}" == "client" ]] || die "Invalid MODE. Use server/client."
   [[ -n "${SECRET:-}" ]] || die "SECRET is required."
   if [[ "${MODE}" == "client" ]]; then
-    [[ "$CLIENT_COUNT" =~ ^[1-3]$ ]] || die "CLIENT_COUNT must be 1-3."
+    [[ "$CLIENT_COUNT" =~ ^[1-4]$ ]] || die "CLIENT_COUNT must be 1-4."
+    [[ "$CLIENT_START_INDEX" =~ ^[1-4]$ ]] || die "CLIENT_START_INDEX must be 1-4."
   fi
   ok "Inputs OK. (MODE=${MODE}, TUNNEL_PORT=${TUNNEL_PORT}, SERVICE_PORT=${SERVICE_PORT})"
 
@@ -682,7 +688,9 @@ main() {
 
   local used_tunnel_ports="" used_service_ports="" used_screen_names=""
   local i
-  for i in $(seq 1 "$CLIENT_COUNT"); do
+  local start_index="$CLIENT_START_INDEX"
+  local end_index=$((CLIENT_START_INDEX + CLIENT_COUNT - 1))
+  for i in $(seq "$start_index" "$end_index"); do
     local outside_ip_i tunnel_port_i service_port_i screen_name_i secret_i
     local client_yaml_i
 
