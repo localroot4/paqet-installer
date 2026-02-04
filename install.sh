@@ -357,7 +357,7 @@ set_server_listen_port() {
 set_server_ipv4_addr_public() {
   local file="$1" ip="$2" port="$3"
   sed -i "s/\"10\.0\.0\.100:9999\"/\"${ip}:${port}\"/" "$file"
-  sed -i "s/^[[:space:]]*#\?[[:space:]]*addr:[[:space:]]*\"[0-9]\+\.[0-9]\+\.[0-9]\+\.[0-9]\+:[0-9]\+\"/    addr: \"${ip}:${port}\"/" "$file"
+  perl -0777 -i -pe "s/(ipv4:\\n\\s+addr: )\"[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+:[0-9]+\"/\\1\"${ip}:${port}\"/s" "$file"
 }
 
 set_secret_key() {
@@ -387,7 +387,7 @@ set_client_ipv4_addr_local() {
 set_client_server_addr() {
   local file="$1" outside_ip="$2" tunnel_port="$3"
   sed -i "s/\"10\.0\.0\.100:9999\"/\"${outside_ip}:${tunnel_port}\"/" "$file"
-  sed -i "s/^\([[:space:]]*addr:[[:space:]]*\)\"[0-9]\+\.[0-9]\+\.[0-9]\+\.[0-9]\+:[0-9]\+\"/\1\"${outside_ip}:${tunnel_port}\"/" "$file"
+  perl -0777 -i -pe "s/(server:\\n\\s+addr: )\"[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+:[0-9]+\"/\\1\"${outside_ip}:${tunnel_port}\"/s" "$file"
 }
 
 set_forward_listen_target_client() {
