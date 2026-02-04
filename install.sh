@@ -124,6 +124,18 @@ get_indexed_value() {
   printf -v "$out_var" "%s" "$value"
 }
 
+find_next_client_index() {
+  local i
+  for i in 1 2 3 4; do
+    if [[ "$i" -eq 1 ]]; then
+      [[ -f "$CLIENT_YAML" ]] || { echo "$i"; return 0; }
+    else
+      [[ -f "${ROOT_DIR}/client${i}.yaml" ]] || { echo "$i"; return 0; }
+    fi
+  done
+  echo "5"
+}
+
 # ===== Arch detect + stable BIN path =====
 detect_arch() {
   local a=""
@@ -587,8 +599,23 @@ main() {
 
     if [[ "${MODE}" == "client" ]]; then
       if [[ -z "${CLIENT_COUNT:-}" && -z "${CLIENT_START_INDEX:-}" ]]; then
-        prompt CLIENT_START_INDEX "Which Iran client number? (1-4)" "1"
-        CLIENT_COUNT="1"
+        if [[ -f "$CLIENT_YAML" ]]; then
+          local add_more
+          prompt add_more "client.yaml already exists. Create another client? (y/n)" "y"
+          if [[ "$add_more" =~ ^[Yy]$ ]]; then
+            local next_index
+            next_index="$(find_next_client_index)"
+            [[ "$next_index" -le 4 ]] || die "Already have client1-4. Remove one to create a new client."
+            prompt CLIENT_START_INDEX "Which Iran client number? (2-4)" "$next_index"
+            CLIENT_COUNT="1"
+          else
+            CLIENT_START_INDEX="1"
+            CLIENT_COUNT="1"
+          fi
+        else
+          CLIENT_START_INDEX="1"
+          CLIENT_COUNT="1"
+        fi
       elif [[ -z "${CLIENT_COUNT:-}" ]]; then
         prompt CLIENT_COUNT "How many Iran clients? (1-4)" "1"
       fi
@@ -607,6 +634,8 @@ main() {
   if [[ "${MODE}" == "client" ]]; then
     [[ "$CLIENT_COUNT" =~ ^[1-4]$ ]] || die "CLIENT_COUNT must be 1-4."
     [[ "$CLIENT_START_INDEX" =~ ^[1-4]$ ]] || die "CLIENT_START_INDEX must be 1-4."
+    local client_end=$((CLIENT_START_INDEX + CLIENT_COUNT - 1))
+    [[ "$client_end" -le 4 ]] || die "CLIENT_START_INDEX + CLIENT_COUNT exceeds 4."
   fi
   ok "Inputs OK. (MODE=${MODE}, TUNNEL_PORT=${TUNNEL_PORT}, SERVICE_PORT=${SERVICE_PORT})"
 
