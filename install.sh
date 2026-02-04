@@ -28,6 +28,7 @@ set -Eeuo pipefail
 : "${AUTO_START:=1}"
 : "${AUTO_ATTACH:=1}"
 : "${SKIP_PKG_INSTALL:=0}"
+: "${CLIENT_COUNT:=1}"
 : "${WATCHDOG:=1}"
 : "${WATCHDOG_METHOD:=auto}"  # auto | cron | systemd
 : "${FORCE_IPV6_DISABLE:=1}"
@@ -93,6 +94,33 @@ prompt() {
     read -r -p "$__text: " __val || true
   fi
   printf -v "$__var" "%s" "$__val"
+}
+
+ensure_unique_value() {
+  local value="$1" label="$2" list="$3"
+  local item
+  for item in $list; do
+    [[ "$item" == "$value" ]] && die "${label} must be unique. '${value}' is already used."
+  done
+}
+
+get_indexed_value() {
+  local base="$1" idx="$2" prompt_text="$3" default_val="$4" out_var="$5"
+  local var_name="$base"
+  [[ "$idx" -gt 1 ]] && var_name="${base}_${idx}"
+  local value="${!var_name:-}"
+  if [[ -z "$value" ]]; then
+    if has_tty; then
+      prompt value "$prompt_text" "$default_val"
+    else
+      if [[ -n "$default_val" ]]; then
+        value="$default_val"
+      else
+        die "Missing ${var_name} in pipe mode."
+      fi
+    fi
+  fi
+  printf -v "$out_var" "%s" "$value"
 }
 
 # ===== Arch detect + stable BIN path =====
@@ -397,21 +425,21 @@ set_forward_listen_target_client() {
 }
 
 # ===== screen runner =====
-screen_exists() { screen -ls 2>/dev/null | grep -q "[[:space:]]${SCREEN_NAME}[[:space:]]"; }
+screen_exists() { local name="$1"; screen -ls 2>/dev/null | grep -q "[[:space:]]${name}[[:space:]]"; }
 
 start_in_screen() {
-  local mode="$1" cfg="$2"
+  local mode="$1" cfg="$2" screen_name="$3"
   screen -wipe >/dev/null 2>&1 || true
   : >> "$LOG_RUNTIME"
 
-  if screen_exists; then
-    warn "Screen session already exists: ${SCREEN_NAME} (not starting a second one)"
+  if screen_exists "$screen_name"; then
+    warn "Screen session already exists: ${screen_name} (not starting a second one)"
     return 0
   fi
 
-  log "Starting paqet in screen session: ${SCREEN_NAME}"
+  log "Starting paqet in screen session: ${screen_name}"
   log "Command: ${BIN_LOCAL} run -c ${cfg}"
-  screen -dmS "$SCREEN_NAME" bash -lc "
+  screen -dmS "$screen_name" bash -lc "
     cd '$ROOT_DIR'
     echo '--- $(ts) START ${mode} ---' >> '$LOG_RUNTIME'
     if command -v apt-get >/dev/null 2>&1; then
@@ -426,7 +454,7 @@ start_in_screen() {
     fi
     sleep 2
   "
-  ok "Screen started. Attach: screen -r ${SCREEN_NAME}"
+  ok "Screen started. Attach: screen -r ${screen_name}"
 }
 
 # ===== watchdog =====
@@ -475,19 +503,20 @@ EOF
 }
 
 install_watchdog_systemd() {
-  local cfg="$1"
-  cat > /etc/systemd/system/paqet-watchdog.service <<EOF
+  local cfg="$1" screen_name="$2"
+  local unit="paqet-watchdog-${screen_name}"
+  cat > "/etc/systemd/system/${unit}.service" <<EOF
 [Unit]
-Description=Paqet Watchdog (LR4)
+Description=Paqet Watchdog (LR4) ${screen_name}
 After=network.target
 [Service]
 Type=oneshot
-ExecStart=${WATCHDOG_SH} ${MODE} ${SCREEN_NAME} ${BIN_LOCAL} ${cfg} ${LOG_RUNTIME} ${LOG_WATCHDOG}
+ExecStart=${WATCHDOG_SH} ${MODE} ${screen_name} ${BIN_LOCAL} ${cfg} ${LOG_RUNTIME} ${LOG_WATCHDOG}
 EOF
 
-  cat > /etc/systemd/system/paqet-watchdog.timer <<EOF
+  cat > "/etc/systemd/system/${unit}.timer" <<EOF
 [Unit]
-Description=Run Paqet Watchdog every 1 minute
+Description=Run Paqet Watchdog every 1 minute (${screen_name})
 [Timer]
 OnBootSec=30
 OnUnitActiveSec=60
@@ -497,25 +526,25 @@ WantedBy=timers.target
 EOF
 
   systemctl daemon-reload
-  systemctl enable --now paqet-watchdog.timer >/dev/null 2>&1 || true
-  ok "Watchdog enabled via systemd timer."
+  systemctl enable --now "${unit}.timer" >/dev/null 2>&1 || true
+  ok "Watchdog enabled via systemd timer (${screen_name})."
 }
 
 install_watchdog_cron() {
-  local cfg="$1"
-  local line="* * * * * ${WATCHDOG_SH} ${MODE} ${SCREEN_NAME} ${BIN_LOCAL} ${cfg} ${LOG_RUNTIME} ${LOG_WATCHDOG}"
-  ( crontab -l 2>/dev/null | grep -v "paqet-watchdog.sh" || true; echo "$line" ) | crontab -
-  ok "Watchdog enabled via cron (every 1 minute)."
+  local cfg="$1" screen_name="$2"
+  local line="* * * * * ${WATCHDOG_SH} ${MODE} ${screen_name} ${BIN_LOCAL} ${cfg} ${LOG_RUNTIME} ${LOG_WATCHDOG}"
+  ( crontab -l 2>/dev/null | grep -v "${WATCHDOG_SH} ${MODE} ${screen_name}" || true; echo "$line" ) | crontab -
+  ok "Watchdog enabled via cron (every 1 minute) for ${screen_name}."
 }
 
 install_watchdog() {
-  local cfg="$1"
+  local cfg="$1" screen_name="$2"
   [[ "${WATCHDOG}" == "1" ]] || { warn "WATCHDOG=0 (skipped)"; return 0; }
   write_watchdog_script
-  if [[ "${WATCHDOG_METHOD}" == "systemd" ]]; then install_watchdog_systemd "$cfg"; return 0; fi
-  if [[ "${WATCHDOG_METHOD}" == "cron" ]]; then install_watchdog_cron "$cfg"; return 0; fi
-  if command -v systemctl >/dev/null 2>&1; then install_watchdog_systemd "$cfg" || install_watchdog_cron "$cfg"
-  else install_watchdog_cron "$cfg"
+  if [[ "${WATCHDOG_METHOD}" == "systemd" ]]; then install_watchdog_systemd "$cfg" "$screen_name"; return 0; fi
+  if [[ "${WATCHDOG_METHOD}" == "cron" ]]; then install_watchdog_cron "$cfg" "$screen_name"; return 0; fi
+  if command -v systemctl >/dev/null 2>&1; then install_watchdog_systemd "$cfg" "$screen_name" || install_watchdog_cron "$cfg" "$screen_name"
+  else install_watchdog_cron "$cfg" "$screen_name"
   fi
 }
 
@@ -545,17 +574,19 @@ main() {
     fi
 
     [[ -n "${SECRET:-}" ]] || prompt SECRET "Secret key (must match both sides)" "change-me-please"
-    if [[ -z "${TUNNEL_PORT:-}" ]]; then
-      prompt TUNNEL_PORT "Tunnel port" "9999"
-    fi
-    if [[ -z "${SCREEN_NAME:-}" ]]; then
-      prompt SCREEN_NAME "Screen session name" "LR4-paqet"
+
+    if [[ "${MODE}" == "server" ]]; then
+      if [[ -z "${TUNNEL_PORT:-}" ]]; then
+        prompt TUNNEL_PORT "Tunnel port" "9999"
+      fi
+      if [[ -z "${SCREEN_NAME:-}" ]]; then
+        prompt SCREEN_NAME "Screen session name" "LR4-paqet"
+      fi
     fi
 
     if [[ "${MODE}" == "client" ]]; then
-      [[ -n "${OUTSIDE_IP:-}" ]] || prompt OUTSIDE_IP "Outside server PUBLIC IPv4" ""
-      if [[ -z "${SERVICE_PORT:-}" ]]; then
-        prompt SERVICE_PORT "Service port to expose (0.0.0.0:PORT)" "8080"
+      if [[ -z "${CLIENT_COUNT:-}" ]]; then
+        prompt CLIENT_COUNT "How many Iran clients? (1-3)" "1"
       fi
     fi
   fi
@@ -564,11 +595,12 @@ main() {
   TUNNEL_PORT="${TUNNEL_PORT:-9999}"
   SERVICE_PORT="${SERVICE_PORT:-8080}"
   SCREEN_NAME="${SCREEN_NAME:-LR4-paqet}"
+  CLIENT_COUNT="${CLIENT_COUNT:-1}"
   log "Validating inputs..."
   [[ "${MODE:-}" == "server" || "${MODE:-}" == "client" ]] || die "Invalid MODE. Use server/client."
   [[ -n "${SECRET:-}" ]] || die "SECRET is required."
   if [[ "${MODE}" == "client" ]]; then
-    [[ -n "${OUTSIDE_IP:-}" ]] || die "MODE=client requires OUTSIDE_IP."
+    [[ "$CLIENT_COUNT" =~ ^[1-3]$ ]] || die "CLIENT_COUNT must be 1-3."
   fi
   ok "Inputs OK. (MODE=${MODE}, TUNNEL_PORT=${TUNNEL_PORT}, SERVICE_PORT=${SERVICE_PORT})"
 
@@ -628,8 +660,8 @@ main() {
     ok "server.yaml ready."
 
     if [[ "$AUTO_START" == "1" ]]; then
-      start_in_screen "server" "$SERVER_YAML"
-      install_watchdog "$SERVER_YAML"
+      start_in_screen "server" "$SERVER_YAML" "$SCREEN_NAME"
+      install_watchdog "$SERVER_YAML" "$SCREEN_NAME"
     fi
 
     ok "DONE (Outside Server)."
@@ -648,34 +680,68 @@ main() {
   local lip_final="${LOCAL_IP:-$local_ip}"
   [[ -n "$lip_final" ]] || die "Local IPv4 not detected. Set LOCAL_IP='x.x.x.x'."
 
-  log "Copying FULL client example -> ${CLIENT_YAML}"
-  cp -f "${example_dir}/client.yaml.example" "$CLIENT_YAML"
-  ok "Copied full template: $CLIENT_YAML"
+  local used_tunnel_ports="" used_service_ports="" used_screen_names=""
+  local i
+  for i in $(seq 1 "$CLIENT_COUNT"); do
+    local outside_ip_i tunnel_port_i service_port_i screen_name_i secret_i
+    local client_yaml_i
 
-  log "Applying requested edits to client.yaml..."
-  set_interface_line "$CLIENT_YAML" "$iface"
-  set_client_ipv4_addr_local "$CLIENT_YAML" "$lip_final"
-  set_router_mac_all_occurrences "$CLIENT_YAML" "$gw_mac"
-  [[ "$FORCE_IPV6_DISABLE" == "1" ]] && comment_ipv6_block_requested_style "$CLIENT_YAML"
-  disable_socks5_enable_forward_client "$CLIENT_YAML"
-  set_forward_listen_target_client "$CLIENT_YAML" "$SERVICE_PORT" "$OUTSIDE_IP"
-  set_client_server_addr "$CLIENT_YAML" "$OUTSIDE_IP" "$TUNNEL_PORT"
-  set_secret_key "$CLIENT_YAML" "$SECRET"
-  ok "client.yaml ready."
+    if [[ "$i" -eq 1 ]]; then
+      client_yaml_i="$CLIENT_YAML"
+    else
+      client_yaml_i="${ROOT_DIR}/client${i}.yaml"
+    fi
 
-  if [[ "$AUTO_START" == "1" ]]; then
-    start_in_screen "client" "$CLIENT_YAML"
-    install_watchdog "$CLIENT_YAML"
-  fi
+    get_indexed_value "OUTSIDE_IP" "$i" "Outside server PUBLIC IPv4 (client ${i})" "" outside_ip_i
+    get_indexed_value "TUNNEL_PORT" "$i" "Tunnel port (client ${i})" "9999" tunnel_port_i
+    get_indexed_value "SERVICE_PORT" "$i" "Service port to expose (client ${i}, 0.0.0.0:PORT)" "8080" service_port_i
 
-  ok "DONE (Iran Client)."
-  log "Config      : $CLIENT_YAML"
-  log "Attach      : screen -r ${SCREEN_NAME}"
-  log "Runtime log : $LOG_RUNTIME"
-  log "Watchdog log: $LOG_WATCHDOG"
-  if has_tty && [[ "${AUTO_ATTACH}" == "1" ]]; then
-    log "Auto-attaching to screen session: ${SCREEN_NAME}"
-    screen -r "${SCREEN_NAME}"
-  fi
+    local screen_default="LR4-paqet"
+    [[ "$i" -gt 1 ]] && screen_default="LR4-paqet-${i}"
+    get_indexed_value "SCREEN_NAME" "$i" "Screen session name (client ${i})" "$screen_default" screen_name_i
+
+    secret_i="$SECRET"
+    if [[ "$i" -gt 1 ]]; then
+      local secret_var="SECRET_${i}"
+      [[ -n "${!secret_var:-}" ]] && secret_i="${!secret_var}"
+    fi
+
+    ensure_unique_value "$tunnel_port_i" "Tunnel port" "$used_tunnel_ports"
+    used_tunnel_ports="${used_tunnel_ports} ${tunnel_port_i}"
+    ensure_unique_value "$service_port_i" "Service port" "$used_service_ports"
+    used_service_ports="${used_service_ports} ${service_port_i}"
+    ensure_unique_value "$screen_name_i" "Screen name" "$used_screen_names"
+    used_screen_names="${used_screen_names} ${screen_name_i}"
+
+    log "Copying FULL client example -> ${client_yaml_i}"
+    cp -f "${example_dir}/client.yaml.example" "$client_yaml_i"
+    ok "Copied full template: $client_yaml_i"
+
+    log "Applying requested edits to client${i}.yaml..."
+    set_interface_line "$client_yaml_i" "$iface"
+    set_client_ipv4_addr_local "$client_yaml_i" "$lip_final"
+    set_router_mac_all_occurrences "$client_yaml_i" "$gw_mac"
+    [[ "$FORCE_IPV6_DISABLE" == "1" ]] && comment_ipv6_block_requested_style "$client_yaml_i"
+    disable_socks5_enable_forward_client "$client_yaml_i"
+    set_forward_listen_target_client "$client_yaml_i" "$service_port_i" "$outside_ip_i"
+    set_client_server_addr "$client_yaml_i" "$outside_ip_i" "$tunnel_port_i"
+    set_secret_key "$client_yaml_i" "$secret_i"
+    ok "client${i}.yaml ready."
+
+    if [[ "$AUTO_START" == "1" ]]; then
+      start_in_screen "client" "$client_yaml_i" "$screen_name_i"
+      install_watchdog "$client_yaml_i" "$screen_name_i"
+    fi
+
+    ok "DONE (Iran Client ${i})."
+    log "Config      : $client_yaml_i"
+    log "Attach      : screen -r ${screen_name_i}"
+    log "Runtime log : $LOG_RUNTIME"
+    log "Watchdog log: $LOG_WATCHDOG"
+    if has_tty && [[ "${AUTO_ATTACH}" == "1" ]]; then
+      log "Auto-attaching to screen session: ${screen_name_i}"
+      screen -r "${screen_name_i}"
+    fi
+  done
 }
 main "$@"
