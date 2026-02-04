@@ -29,7 +29,7 @@ set -Eeuo pipefail
 : "${AUTO_ATTACH:=1}"
 : "${SKIP_PKG_INSTALL:=0}"
 : "${CLIENT_COUNT:=1}"
-: "${CLIENT_START_INDEX:=1}"
+: "${CLIENT_START_INDEX:=}"
 : "${WATCHDOG:=1}"
 : "${WATCHDOG_METHOD:=auto}"  # auto | cron | systemd
 : "${FORCE_IPV6_DISABLE:=1}"
@@ -598,27 +598,20 @@ main() {
     fi
 
     if [[ "${MODE}" == "client" ]]; then
-      if [[ -z "${CLIENT_COUNT:-}" && -z "${CLIENT_START_INDEX:-}" ]]; then
-        if [[ -f "$CLIENT_YAML" ]]; then
-          local add_more
-          prompt add_more "client.yaml already exists. Create another client? (y/n)" "y"
-          if [[ "$add_more" =~ ^[Yy]$ ]]; then
-            local next_index
-            next_index="$(find_next_client_index)"
-            [[ "$next_index" -le 4 ]] || die "Already have client1-4. Remove one to create a new client."
-            prompt CLIENT_START_INDEX "Which Iran client number? (2-4)" "$next_index"
-            CLIENT_COUNT="1"
-          else
-            CLIENT_START_INDEX="1"
-            CLIENT_COUNT="1"
-          fi
-        else
-          CLIENT_START_INDEX="1"
-          CLIENT_COUNT="1"
-        fi
-      elif [[ -z "${CLIENT_COUNT:-}" ]]; then
-        prompt CLIENT_COUNT "How many Iran clients? (1-4)" "1"
+      [[ -n "${OUTSIDE_IP:-}" ]] || prompt OUTSIDE_IP "Outside server PUBLIC IPv4" ""
+      if [[ -z "${SERVICE_PORT:-}" ]]; then
+        prompt SERVICE_PORT "Service port to expose (0.0.0.0:PORT)" "8080"
       fi
+      if [[ -z "${TUNNEL_PORT:-}" ]]; then
+        prompt TUNNEL_PORT "Tunnel port" "9999"
+      fi
+      if [[ -z "${CLIENT_START_INDEX:-}" ]]; then
+        prompt CLIENT_START_INDEX "Which Iran client number? (1-4)" "1"
+      fi
+      if [[ -z "${SCREEN_NAME:-}" ]]; then
+        prompt SCREEN_NAME "Screen session name" "LR4-paqet"
+      fi
+      CLIENT_COUNT="1"
     fi
   fi
 
@@ -632,6 +625,7 @@ main() {
   [[ "${MODE:-}" == "server" || "${MODE:-}" == "client" ]] || die "Invalid MODE. Use server/client."
   [[ -n "${SECRET:-}" ]] || die "SECRET is required."
   if [[ "${MODE}" == "client" ]]; then
+    [[ -n "${OUTSIDE_IP:-}" ]] || die "MODE=client requires OUTSIDE_IP."
     [[ "$CLIENT_COUNT" =~ ^[1-4]$ ]] || die "CLIENT_COUNT must be 1-4."
     [[ "$CLIENT_START_INDEX" =~ ^[1-4]$ ]] || die "CLIENT_START_INDEX must be 1-4."
     local client_end=$((CLIENT_START_INDEX + CLIENT_COUNT - 1))
