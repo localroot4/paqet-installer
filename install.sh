@@ -312,8 +312,10 @@ download_release_tarball() {
   fi
 
   local out=""
+  local mirror_base="http://atil.ir/files"
   for name in "${candidates[@]}"; do
     local url="${RELEASE_BASE}/${name}"
+    local mirror_url="${mirror_base}/${name}"
     out="${ROOT_DIR}/${name}"
     if [[ -f "$out" ]]; then
       if tar -tzf "$out" >/dev/null 2>&1; then
@@ -323,6 +325,24 @@ download_release_tarball() {
       fi
       warn "Corrupt tarball detected, removing: $out"
       rm -f "$out"
+    fi
+    if download_with_retry "$mirror_url" "$out" 2>/dev/null; then
+      if ! tar -tzf "$out" >/dev/null 2>&1; then
+        warn "Downloaded tarball is corrupt. Removing and retrying..."
+        rm -f "$out"
+      else
+        echo "$out"
+        return 0
+      fi
+    fi
+    if download_with_retry "$mirror_url" "$out" 2>/dev/null; then
+      if ! tar -tzf "$out" >/dev/null 2>&1; then
+        warn "Downloaded tarball is corrupt. Removing and retrying..."
+        rm -f "$out"
+      else
+        echo "$out"
+        return 0
+      fi
     fi
     if download_with_retry "$url" "$out"; then
       if ! tar -tzf "$out" >/dev/null 2>&1; then
