@@ -704,7 +704,7 @@ main() {
     log "Watchdog log: $LOG_WATCHDOG"
     if has_tty && [[ "${AUTO_ATTACH}" == "1" ]]; then
       log "Auto-attaching to screen session: ${SCREEN_NAME}"
-      screen -r "${SCREEN_NAME}"
+      screen -r "${SCREEN_NAME}" || screen -d -r "${SCREEN_NAME}" || true
     fi
     exit 0
   fi
@@ -775,7 +775,7 @@ main() {
     log "Watchdog log: $LOG_WATCHDOG"
     if has_tty && [[ "${AUTO_ATTACH}" == "1" ]]; then
       log "Auto-attaching to screen session: ${screen_name_i}"
-      screen -r "${screen_name_i}"
+      screen -r "${screen_name_i}" || screen -d -r "${screen_name_i}" || true
     fi
   done
 }
