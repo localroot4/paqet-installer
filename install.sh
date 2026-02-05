@@ -316,11 +316,20 @@ download_release_tarball() {
     local url="${RELEASE_BASE}/${name}"
     out="${ROOT_DIR}/${name}"
     if [[ -f "$out" ]]; then
-      warne "Tarball already exists: $out"
-      echo "$out"
-      return 0
+      if tar -tzf "$out" >/dev/null 2>&1; then
+        warne "Tarball already exists: $out"
+        echo "$out"
+        return 0
+      fi
+      warn "Corrupt tarball detected, removing: $out"
+      rm -f "$out"
     fi
     if download_with_retry "$url" "$out"; then
+      if ! tar -tzf "$out" >/dev/null 2>&1; then
+        warn "Downloaded tarball is corrupt. Removing and retrying..."
+        rm -f "$out"
+        continue
+      fi
       echo "$out"
       return 0
     fi
@@ -704,7 +713,7 @@ main() {
     log "Watchdog log: $LOG_WATCHDOG"
     if has_tty && [[ "${AUTO_ATTACH}" == "1" ]]; then
       log "Auto-attaching to screen session: ${SCREEN_NAME}"
-      screen -r "${SCREEN_NAME}"
+      screen -r "${SCREEN_NAME}" || screen -d -r "${SCREEN_NAME}" || true
     fi
     exit 0
   fi
@@ -775,7 +784,7 @@ main() {
     log "Watchdog log: $LOG_WATCHDOG"
     if has_tty && [[ "${AUTO_ATTACH}" == "1" ]]; then
       log "Auto-attaching to screen session: ${screen_name_i}"
-      screen -r "${screen_name_i}"
+      screen -r "${screen_name_i}" || screen -d -r "${screen_name_i}" || true
     fi
   done
 }
