@@ -316,11 +316,20 @@ download_release_tarball() {
     local url="${RELEASE_BASE}/${name}"
     out="${ROOT_DIR}/${name}"
     if [[ -f "$out" ]]; then
-      warne "Tarball already exists: $out"
-      echo "$out"
-      return 0
+      if tar -tzf "$out" >/dev/null 2>&1; then
+        warne "Tarball already exists: $out"
+        echo "$out"
+        return 0
+      fi
+      warn "Corrupt tarball detected, removing: $out"
+      rm -f "$out"
     fi
     if download_with_retry "$url" "$out"; then
+      if ! tar -tzf "$out" >/dev/null 2>&1; then
+        warn "Downloaded tarball is corrupt. Removing and retrying..."
+        rm -f "$out"
+        continue
+      fi
       echo "$out"
       return 0
     fi
