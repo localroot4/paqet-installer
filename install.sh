@@ -323,21 +323,21 @@ download_release_tarball() {
         echo "$out"
         return 0
       fi
-      warn "Corrupt tarball detected, removing: $out"
+      warne "Corrupt tarball detected, removing: $out"
       rm -f "$out"
     fi
-    if download_with_retry "$mirror_url" "$out" 2>/dev/null; then
+    if download_with_retry "$mirror_url" "$out"; then
       if ! tar -tzf "$out" >/dev/null 2>&1; then
-        warn "Downloaded tarball is corrupt. Removing and retrying..."
+        warne "Downloaded tarball is corrupt. Removing and retrying..."
         rm -f "$out"
       else
         echo "$out"
         return 0
       fi
     fi
-    if download_with_retry "$mirror_url" "$out" 2>/dev/null; then
+    if download_with_retry "$mirror_url" "$out"; then
       if ! tar -tzf "$out" >/dev/null 2>&1; then
-        warn "Downloaded tarball is corrupt. Removing and retrying..."
+        warne "Downloaded tarball is corrupt. Removing and retrying..."
         rm -f "$out"
       else
         echo "$out"
@@ -346,7 +346,7 @@ download_release_tarball() {
     fi
     if download_with_retry "$url" "$out"; then
       if ! tar -tzf "$out" >/dev/null 2>&1; then
-        warn "Downloaded tarball is corrupt. Removing and retrying..."
+        warne "Downloaded tarball is corrupt. Removing and retrying..."
         rm -f "$out"
         continue
       fi
