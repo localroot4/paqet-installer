@@ -15,7 +15,7 @@ set -Eeuo pipefail
 ############################################
 
 # ===== Hard init (prevents "unbound variable" with set -u) =====
-: "${PAQET_VERSION:=v1.0.0-alpha.11}"
+: "${PAQET_VERSION:=v1.0.0-alpha.15}"
 : "${MODE:=}"            # server | client
 : "${TUNNEL_PORT:=9999}"
 : "${SERVICE_PORT:=8080}"
