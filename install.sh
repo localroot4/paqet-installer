@@ -297,6 +297,7 @@ manage_single_config() {
           local cur_ipv4="$(get_addr_in_section "$file" "ipv4")"
           set_server_listen_port "$file" "$ntp"
           set_server_ipv4_addr_public "$file" "$(get_addr_host "$cur_ipv4")" "$ntp"
+          set_ipv6_port_if_enabled "$file" "$ntp"
         else
           local cur_srv2="$(get_addr_in_section "$file" "server")"
           set_client_server_addr "$file" "$(get_addr_host "$cur_srv2")" "$ntp"
@@ -683,6 +684,27 @@ set_server_ipv4_addr_public() {
   perl -0777 -i -pe "s/(ipv4:\\n\\s+addr: )\"[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+:[0-9]+\"/\\1\"${ip}:${port}\"/s" "$file"
 }
 
+set_ipv6_port_if_enabled() {
+  local file="$1" port="$2"
+  awk -v p="$port" '
+    BEGIN{in6=0}
+    {
+      line=$0
+      if (line ~ /^[[:space:]]*#?[[:space:]]*ipv6:[[:space:]]*$/) {
+        if (line ~ /^[[:space:]]*#/) in6=0; else in6=1
+      } else if (in6 && line ~ /^[^[:space:]]/) {
+        in6=0
+      }
+
+      if (in6 && line ~ /^[[:space:]]*addr:[[:space:]]*"\[[^]]+\]:[0-9]+"/) {
+        sub(/:[0-9]+"/, ":" p "\"", line)
+      }
+
+      print line
+    }
+  ' "$file" > "${file}.tmp" && mv "${file}.tmp" "$file"
+}
+
 set_secret_key() {
   local file="$1" secret="$2"
   sed -i "s/^\([[:space:]]*key:[[:space:]]*\)\"[^\"]*\"/\1\"${secret}\"/" "$file"
@@ -1011,6 +1033,7 @@ main() {
     set_interface_line "$SERVER_YAML" "$iface"
     set_server_listen_port "$SERVER_YAML" "$TUNNEL_PORT"
     set_server_ipv4_addr_public "$SERVER_YAML" "$ip_final" "$TUNNEL_PORT"
+    set_ipv6_port_if_enabled "$SERVER_YAML" "$TUNNEL_PORT"
     set_router_mac_all_occurrences "$SERVER_YAML" "$gw_mac"
     set_mtu_value "$SERVER_YAML" "${best_mtu:-1350}"
     [[ "$FORCE_IPV6_DISABLE" == "1" ]] && comment_ipv6_block_requested_style "$SERVER_YAML"
