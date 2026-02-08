@@ -739,7 +739,21 @@ set_mtu_value() {
   local file="$1" mtu="$2"
   [[ "$mtu" =~ ^[0-9]+$ ]] || mtu=1350
   [[ "$mtu" -gt 1350 ]] && mtu=1350
-  sed -i -E "s/^([[:space:]]*mtu:[[:space:]]*)[0-9]+/\1${mtu}/" "$file"
+
+  # Prefer uncommenting/updating existing kcp mtu line if present.
+  if grep -qE '^[[:space:]]*#?[[:space:]]*mtu:[[:space:]]*[0-9]+' "$file"; then
+    sed -i -E "s/^([[:space:]]*)#?[[:space:]]*mtu:[[:space:]]*[0-9]+(.*)$/\1mtu: ${mtu}\2/" "$file"
+    return 0
+  fi
+
+  # If template variant lacks mtu line, inject it inside kcp block.
+  awk -v v="$mtu" '
+    {print}
+    /^[[:space:]]*kcp:[[:space:]]*$/ && !done {
+      print "    mtu: " v "              # Maximum transmission unit (50-1500)"
+      done=1
+    }
+  ' "$file" > "${file}.tmp" && mv "${file}.tmp" "$file"
 }
 
 set_forward_listen_target_client() {
