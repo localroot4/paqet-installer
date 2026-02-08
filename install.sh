@@ -727,6 +727,26 @@ set_forward_listen_target_client() {
   sed -i -E "s#(^[[:space:]]*target:[[:space:]]*\")[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+(\".*)#\1${outside_ip}:${service_port}\2#" "$file"
 }
 
+ensure_client_pcap_block() {
+  local file="$1"
+  perl -0777 -i -pe '
+    s/^([ \t]*)#\s*pcap:\s*$/\1pcap:/mg;
+    s/^([ \t]*)#\s*sockbuf:\s*([0-9]+.*)$/\1sockbuf: \2/mg;
+  ' "$file"
+
+  if ! awk '/^[[:space:]]*pcap:[[:space:]]*$/{f=1} END{exit !f}' "$file"; then
+    awk '
+      {print}
+      /^[[:space:]]*tcp:[[:space:]]*$/ && !done {
+        print ""
+        print "  pcap:"
+        print "    sockbuf: 4194304"
+        done=1
+      }
+    ' "$file" > "${file}.tmp" && mv "${file}.tmp" "$file"
+  fi
+}
+
 # ===== screen runner =====
 screen_exists() { local name="$1"; screen -ls 2>/dev/null | grep -q "[[:space:]]${name}[[:space:]]"; }
 
@@ -1083,6 +1103,7 @@ main() {
     set_client_ipv4_addr_local "$client_yaml_i" "$lip_final"
     set_router_mac_all_occurrences "$client_yaml_i" "$gw_mac"
     set_mtu_value "$client_yaml_i" "${best_mtu:-1350}"
+    ensure_client_pcap_block "$client_yaml_i"
     [[ "$FORCE_IPV6_DISABLE" == "1" ]] && comment_ipv6_block_requested_style "$client_yaml_i"
     disable_socks5_enable_forward_client "$client_yaml_i"
     set_forward_listen_target_client "$client_yaml_i" "$service_port_i" "$outside_ip_i"
