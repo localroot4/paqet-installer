@@ -148,24 +148,69 @@ list_existing_configs() {
   printf "%s\n" "${files[@]:-}"
 }
 
-yaml_capture() {
-  local file="$1" regex="$2"
-  perl -0777 -ne "if (/${regex}/s) { print \$1; }" "$file" 2>/dev/null | head -n1 || true
-}
-
 get_addr_host() { echo "$1" | sed -E 's/^\[?([^\]]+)\]?:[0-9]+$/\1/'; }
 get_addr_port() { echo "$1" | sed -E 's/^.*:([0-9]+)$/\1/'; }
+
+get_role_value() {
+  local file="$1"
+  awk -F'"' '/^[[:space:]]*role:[[:space:]]*"/ {print $2; exit}' "$file" 2>/dev/null || true
+}
+
+get_addr_in_section() {
+  local file="$1" section="$2"
+  awk -v section="$section" '
+    $0 ~ "^[[:space:]]*" section ":[[:space:]]*$" {in_sec=1; next}
+    in_sec && $0 ~ "^[[:space:]]*[A-Za-z_]+:[[:space:]]*$" {in_sec=0}
+    in_sec && $0 ~ /addr:[[:space:]]*"/ {
+      if (match($0, /"[^"]+"/)) {
+        val=substr($0, RSTART+1, RLENGTH-2)
+        print val
+        exit
+      }
+    }
+  ' "$file" 2>/dev/null || true
+}
+
+get_forward_listen() {
+  local file="$1"
+  awk '
+    $0 ~ "^[[:space:]]*forward:[[:space:]]*$" {in_fwd=1; next}
+    in_fwd && $0 ~ "^[[:space:]]*[A-Za-z_]+:[[:space:]]*$" {in_fwd=0}
+    in_fwd && $0 ~ /listen:[[:space:]]*"/ {
+      if (match($0, /"[^"]+"/)) {
+        val=substr($0, RSTART+1, RLENGTH-2)
+        print val
+        exit
+      }
+    }
+  ' "$file" 2>/dev/null || true
+}
+
+get_kcp_scalar() {
+  local file="$1" key="$2"
+  awk -v key="$key" '
+    $0 ~ "^[[:space:]]*kcp:[[:space:]]*$" {in_kcp=1; next}
+    in_kcp && $0 ~ "^[[:space:]]*[A-Za-z_]+:[[:space:]]*$" && $0 !~ "^[[:space:]]*" key ":[[:space:]]*" {if ($0 !~ /^[[:space:]]+/) in_kcp=0}
+    in_kcp && $0 ~ "^[[:space:]]*" key ":[[:space:]]*" {
+      line=$0
+      sub(/^[[:space:]]*[^:]+:[[:space:]]*/, "", line)
+      gsub(/"/, "", line)
+      print line
+      exit
+    }
+  ' "$file" 2>/dev/null || true
+}
 
 show_config_details() {
   local file="$1"
   local role listen_addr server_addr ipv4_addr forward_listen mtu key
-  role="$(yaml_capture "$file" '^\s*role:\s*"([^"]+)"')"
-  listen_addr="$(yaml_capture "$file" 'listen:\n(?:.*\n){0,8}?\s*addr:\s*"([^"]+)"')"
-  server_addr="$(yaml_capture "$file" 'server:\n(?:.*\n){0,8}?\s*addr:\s*"([^"]+)"')"
-  ipv4_addr="$(yaml_capture "$file" 'ipv4:\n(?:.*\n){0,8}?\s*addr:\s*"([^"]+)"')"
-  forward_listen="$(yaml_capture "$file" 'forward:\n(?:.*\n){0,12}?-\s*listen:\s*"([^"]+)"')"
-  mtu="$(yaml_capture "$file" 'kcp:\n(?:.*\n){0,30}?\s*mtu:\s*([0-9]+)')"
-  key="$(yaml_capture "$file" 'kcp:\n(?:.*\n){0,30}?\s*key:\s*"([^"]+)"')"
+  role="$(get_role_value "$file")"
+  listen_addr="$(get_addr_in_section "$file" "listen")"
+  server_addr="$(get_addr_in_section "$file" "server")"
+  ipv4_addr="$(get_addr_in_section "$file" "ipv4")"
+  forward_listen="$(get_forward_listen "$file")"
+  mtu="$(get_kcp_scalar "$file" "mtu")"
+  key="$(get_kcp_scalar "$file" "key")"
 
   echo "File         : $file"
   echo "Role         : ${role:-unknown}"
@@ -180,7 +225,7 @@ show_config_details() {
 manage_single_config() {
   local file="$1"
   local role
-  role="$(yaml_capture "$file" '^\s*role:\s*"([^"]+)"')"
+  role="$(get_role_value "$file")"
 
   while true; do
     echo
@@ -200,11 +245,11 @@ manage_single_config() {
         local nip
         prompt nip "New outside/server IPv4" ""
         if [[ "$role" == "server" ]]; then
-          local cur="$(yaml_capture "$file" 'ipv4:\n(?:.*\n){0,8}?\s*addr:\s*"([^"]+)"')"
+          local cur="$(get_addr_in_section "$file" "ipv4")"
           set_server_ipv4_addr_public "$file" "$nip" "$(get_addr_port "$cur")"
         else
-          local cur_srv="$(yaml_capture "$file" 'server:\n(?:.*\n){0,8}?\s*addr:\s*"([^"]+)"')"
-          local cur_fwd="$(yaml_capture "$file" 'forward:\n(?:.*\n){0,12}?-\s*listen:\s*"([^"]+)"')"
+          local cur_srv="$(get_addr_in_section "$file" "server")"
+          local cur_fwd="$(get_forward_listen "$file")"
           set_client_server_addr "$file" "$nip" "$(get_addr_port "$cur_srv")"
           [[ -n "$cur_fwd" ]] && set_forward_listen_target_client "$file" "$(get_addr_port "$cur_fwd")" "$nip"
         fi
@@ -214,11 +259,11 @@ manage_single_config() {
         local ntp
         prompt ntp "New tunnel port" "9999"
         if [[ "$role" == "server" ]]; then
-          local cur_ipv4="$(yaml_capture "$file" 'ipv4:\n(?:.*\n){0,8}?\s*addr:\s*"([^"]+)"')"
+          local cur_ipv4="$(get_addr_in_section "$file" "ipv4")"
           set_server_listen_port "$file" "$ntp"
           set_server_ipv4_addr_public "$file" "$(get_addr_host "$cur_ipv4")" "$ntp"
         else
-          local cur_srv2="$(yaml_capture "$file" 'server:\n(?:.*\n){0,8}?\s*addr:\s*"([^"]+)"')"
+          local cur_srv2="$(get_addr_in_section "$file" "server")"
           set_client_server_addr "$file" "$(get_addr_host "$cur_srv2")" "$ntp"
         fi
         ok "Updated tunnel port in $file"
@@ -229,7 +274,7 @@ manage_single_config() {
         else
           local nsp
           prompt nsp "New service port" "8080"
-          local cur_srv3="$(yaml_capture "$file" 'server:\n(?:.*\n){0,8}?\s*addr:\s*"([^"]+)"')"
+          local cur_srv3="$(get_addr_in_section "$file" "server")"
           set_forward_listen_target_client "$file" "$nsp" "$(get_addr_host "$cur_srv3")"
           ok "Updated service port in $file"
         fi
