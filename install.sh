@@ -148,6 +148,18 @@ list_existing_configs() {
   printf "%s\n" "${files[@]:-}"
 }
 
+friendly_config_name() {
+  local file="$1"
+  case "$file" in
+    "$SERVER_YAML") echo "KHAREJ(server)" ;;
+    "$CLIENT_YAML") echo "IRAN1(client)" ;;
+    "${ROOT_DIR}/client2.yaml") echo "IRAN2(client)" ;;
+    "${ROOT_DIR}/client3.yaml") echo "IRAN3(client)" ;;
+    "${ROOT_DIR}/client4.yaml") echo "IRAN4(client)" ;;
+    *) echo "$(basename "$file")" ;;
+  esac
+}
+
 get_addr_host() { echo "$1" | sed -E 's/^\[?([^\]]+)\]?:[0-9]+$/\1/'; }
 get_addr_port() { echo "$1" | sed -E 's/^.*:([0-9]+)$/\1/'; }
 
@@ -203,7 +215,7 @@ get_kcp_scalar() {
 
 show_config_details() {
   local file="$1"
-  local role listen_addr server_addr ipv4_addr forward_listen mtu key
+  local role listen_addr server_addr ipv4_addr forward_listen mtu key friendly
   role="$(get_role_value "$file")"
   listen_addr="$(get_addr_in_section "$file" "listen")"
   server_addr="$(get_addr_in_section "$file" "server")"
@@ -211,14 +223,26 @@ show_config_details() {
   forward_listen="$(get_forward_listen "$file")"
   mtu="$(get_kcp_scalar "$file" "mtu")"
   key="$(get_kcp_scalar "$file" "key")"
+  friendly="$(friendly_config_name "$file")"
 
-  echo "File         : $file"
-  echo "Role         : ${role:-unknown}"
-  [[ -n "$listen_addr" ]] && echo "Listen addr  : $listen_addr"
-  [[ -n "$server_addr" ]] && echo "Server addr  : $server_addr"
-  [[ -n "$ipv4_addr" ]] && echo "IPv4 addr    : $ipv4_addr"
-  [[ -n "$forward_listen" ]] && echo "Service bind : $forward_listen"
-  [[ -n "$mtu" ]] && echo "KCP MTU      : $mtu"
+  echo "Profile      : ${friendly}"
+  if [[ "$role" == "client" ]]; then
+    echo "Role         : IRAN(client)"
+    [[ -n "$server_addr" ]] && echo "IPV4 Kharej  : $server_addr"
+    [[ -n "$ipv4_addr" ]] && echo "Iran (local) : $ipv4_addr"
+    [[ -n "$forward_listen" ]] && echo "Service port : $forward_listen"
+  elif [[ "$role" == "server" ]]; then
+    echo "Role         : KHAREJ(server)"
+    [[ -n "$listen_addr" ]] && echo "Tunnel port  : $listen_addr"
+    [[ -n "$ipv4_addr" ]] && echo "Kharej IPv4  : $ipv4_addr"
+  else
+    echo "Role         : ${role:-unknown}"
+    [[ -n "$listen_addr" ]] && echo "Listen addr  : $listen_addr"
+    [[ -n "$server_addr" ]] && echo "Server addr  : $server_addr"
+    [[ -n "$ipv4_addr" ]] && echo "IPv4 addr    : $ipv4_addr"
+    [[ -n "$forward_listen" ]] && echo "Service port : $forward_listen"
+  fi
+  [[ -n "$mtu" ]] && echo "KCP MTU      : ${mtu}"
   [[ -n "$key" ]] && echo "Secret key   : ${key}"
 }
 
@@ -229,7 +253,7 @@ manage_single_config() {
 
   while true; do
     echo
-    echo "Manage: $file"
+    echo "Manage: $(friendly_config_name "$file")"
     show_config_details "$file"
     echo
     echo "  1) Edit outside/server IP"
@@ -314,7 +338,7 @@ manage_existing_configs() {
     local idx=1
     local file
     for file in "${configs[@]}"; do
-      echo "  ${idx}) ${file}"
+      echo "  ${idx}) $(friendly_config_name "$file")"
       idx=$((idx+1))
     done
     echo "  0) Exit management"
@@ -560,15 +584,17 @@ detect_best_mtu() {
   [[ -n "$base_mtu" ]] || base_mtu=1500
 
   local m
-  for m in 1472 1464 1452 1440 1420 1412 1400 1380 1360 1350 1320 1300; do
+  for m in 1322 1320 1312 1300 1280 1260 1240; do
     if ping -c 1 -W 1 -M do -s "$m" "$gw" >/dev/null 2>&1; then
-      echo $((m + 28))
+      local detected=$((m + 28))
+      [[ "$detected" -gt 1350 ]] && detected=1350
+      echo "$detected"
       return 0
     fi
   done
 
-  if [[ "$base_mtu" -gt 1500 ]]; then
-    echo 1500
+  if [[ "$base_mtu" -gt 1350 ]]; then
+    echo 1350
   else
     echo "$base_mtu"
   fi
@@ -678,6 +704,8 @@ set_client_server_addr() {
 
 set_mtu_value() {
   local file="$1" mtu="$2"
+  [[ "$mtu" =~ ^[0-9]+$ ]] || mtu=1350
+  [[ "$mtu" -gt 1350 ]] && mtu=1350
   sed -i -E "s/^([[:space:]]*mtu:[[:space:]]*)[0-9]+/\1${mtu}/" "$file"
 }
 
