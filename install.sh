@@ -78,6 +78,7 @@ has_tty() { [[ -t 0 && -t 1 ]]; }
 require_env_in_pipe() {
   if is_pipe_mode; then
     [[ -n "${MODE:-}" ]]   || die "PIPE mode detected. Set MODE=server or MODE=client (no prompts in pipe mode)."
+    [[ "${MODE:-}" != "manage" ]] || die "MODE=manage is interactive-only (TTY required)."
     [[ -n "${SECRET:-}" ]] || die "PIPE mode detected. Set SECRET='...' (no prompts in pipe mode)."
     if [[ "${MODE}" == "client" ]]; then
       [[ -n "${OUTSIDE_IP:-}" ]] || die "MODE=client requires OUTSIDE_IP='x.x.x.x' in pipe mode."
@@ -134,6 +135,152 @@ find_next_client_index() {
     fi
   done
   echo "5"
+}
+
+list_existing_configs() {
+  local files=()
+  [[ -f "$SERVER_YAML" ]] && files+=("$SERVER_YAML")
+  [[ -f "$CLIENT_YAML" ]] && files+=("$CLIENT_YAML")
+  local i
+  for i in 2 3 4; do
+    [[ -f "${ROOT_DIR}/client${i}.yaml" ]] && files+=("${ROOT_DIR}/client${i}.yaml")
+  done
+  printf "%s\n" "${files[@]:-}"
+}
+
+yaml_capture() {
+  local file="$1" regex="$2"
+  perl -0777 -ne "if (/${regex}/s) { print \$1; }" "$file" 2>/dev/null | head -n1 || true
+}
+
+get_addr_host() { echo "$1" | sed -E 's/^\[?([^\]]+)\]?:[0-9]+$/\1/'; }
+get_addr_port() { echo "$1" | sed -E 's/^.*:([0-9]+)$/\1/'; }
+
+show_config_details() {
+  local file="$1"
+  local role listen_addr server_addr ipv4_addr forward_listen mtu key
+  role="$(yaml_capture "$file" '^\s*role:\s*"([^"]+)"')"
+  listen_addr="$(yaml_capture "$file" 'listen:\n(?:.*\n){0,8}?\s*addr:\s*"([^"]+)"')"
+  server_addr="$(yaml_capture "$file" 'server:\n(?:.*\n){0,8}?\s*addr:\s*"([^"]+)"')"
+  ipv4_addr="$(yaml_capture "$file" 'ipv4:\n(?:.*\n){0,8}?\s*addr:\s*"([^"]+)"')"
+  forward_listen="$(yaml_capture "$file" 'forward:\n(?:.*\n){0,12}?-\s*listen:\s*"([^"]+)"')"
+  mtu="$(yaml_capture "$file" 'kcp:\n(?:.*\n){0,30}?\s*mtu:\s*([0-9]+)')"
+  key="$(yaml_capture "$file" 'kcp:\n(?:.*\n){0,30}?\s*key:\s*"([^"]+)"')"
+
+  echo "File         : $file"
+  echo "Role         : ${role:-unknown}"
+  [[ -n "$listen_addr" ]] && echo "Listen addr  : $listen_addr"
+  [[ -n "$server_addr" ]] && echo "Server addr  : $server_addr"
+  [[ -n "$ipv4_addr" ]] && echo "IPv4 addr    : $ipv4_addr"
+  [[ -n "$forward_listen" ]] && echo "Service bind : $forward_listen"
+  [[ -n "$mtu" ]] && echo "KCP MTU      : $mtu"
+  [[ -n "$key" ]] && echo "Secret key   : ${key}"
+}
+
+manage_single_config() {
+  local file="$1"
+  local role
+  role="$(yaml_capture "$file" '^\s*role:\s*"([^"]+)"')"
+
+  while true; do
+    echo
+    echo "Manage: $file"
+    show_config_details "$file"
+    echo
+    echo "  1) Edit outside/server IP"
+    echo "  2) Edit tunnel port"
+    echo "  3) Edit service port (client forward)"
+    echo "  4) Edit MTU"
+    echo "  5) Edit secret key"
+    echo "  6) Back"
+    local act
+    prompt act "Choose action" "6"
+    case "$act" in
+      1)
+        local nip
+        prompt nip "New outside/server IPv4" ""
+        if [[ "$role" == "server" ]]; then
+          local cur="$(yaml_capture "$file" 'ipv4:\n(?:.*\n){0,8}?\s*addr:\s*"([^"]+)"')"
+          set_server_ipv4_addr_public "$file" "$nip" "$(get_addr_port "$cur")"
+        else
+          local cur_srv="$(yaml_capture "$file" 'server:\n(?:.*\n){0,8}?\s*addr:\s*"([^"]+)"')"
+          local cur_fwd="$(yaml_capture "$file" 'forward:\n(?:.*\n){0,12}?-\s*listen:\s*"([^"]+)"')"
+          set_client_server_addr "$file" "$nip" "$(get_addr_port "$cur_srv")"
+          [[ -n "$cur_fwd" ]] && set_forward_listen_target_client "$file" "$(get_addr_port "$cur_fwd")" "$nip"
+        fi
+        ok "Updated IP in $file"
+        ;;
+      2)
+        local ntp
+        prompt ntp "New tunnel port" "9999"
+        if [[ "$role" == "server" ]]; then
+          local cur_ipv4="$(yaml_capture "$file" 'ipv4:\n(?:.*\n){0,8}?\s*addr:\s*"([^"]+)"')"
+          set_server_listen_port "$file" "$ntp"
+          set_server_ipv4_addr_public "$file" "$(get_addr_host "$cur_ipv4")" "$ntp"
+        else
+          local cur_srv2="$(yaml_capture "$file" 'server:\n(?:.*\n){0,8}?\s*addr:\s*"([^"]+)"')"
+          set_client_server_addr "$file" "$(get_addr_host "$cur_srv2")" "$ntp"
+        fi
+        ok "Updated tunnel port in $file"
+        ;;
+      3)
+        if [[ "$role" == "server" ]]; then
+          warn "Service port applies to client forward only."
+        else
+          local nsp
+          prompt nsp "New service port" "8080"
+          local cur_srv3="$(yaml_capture "$file" 'server:\n(?:.*\n){0,8}?\s*addr:\s*"([^"]+)"')"
+          set_forward_listen_target_client "$file" "$nsp" "$(get_addr_host "$cur_srv3")"
+          ok "Updated service port in $file"
+        fi
+        ;;
+      4)
+        local nmtu
+        prompt nmtu "New MTU" "1350"
+        set_mtu_value "$file" "$nmtu"
+        ok "Updated MTU in $file"
+        ;;
+      5)
+        local nsecret
+        prompt nsecret "New secret key" "change-me-please"
+        set_secret_key "$file" "$nsecret"
+        ok "Updated secret in $file"
+        ;;
+      6) break ;;
+      *) warn "Invalid action." ;;
+    esac
+  done
+}
+
+manage_existing_configs() {
+  local configs=()
+  while IFS= read -r f; do
+    [[ -n "$f" ]] && configs+=("$f")
+  done < <(list_existing_configs)
+
+  if [[ "${#configs[@]}" -eq 0 ]]; then
+    warn "No existing /root/server.yaml or /root/client*.yaml files found."
+    return 0
+  fi
+
+  while true; do
+    echo
+    echo "Existing config files:"
+    local idx=1
+    local file
+    for file in "${configs[@]}"; do
+      echo "  ${idx}) ${file}"
+      idx=$((idx+1))
+    done
+    echo "  0) Exit management"
+
+    local pick
+    prompt pick "Select file number" "0"
+    [[ "$pick" == "0" ]] && break
+    [[ "$pick" =~ ^[0-9]+$ ]] || { warn "Invalid selection."; continue; }
+    [[ "$pick" -ge 1 && "$pick" -le "${#configs[@]}" ]] || { warn "Out of range."; continue; }
+    manage_single_config "${configs[$((pick-1))]}"
+  done
 }
 
 # ===== Arch detect + stable BIN path =====
@@ -635,13 +782,33 @@ main() {
 
   if ! is_pipe_mode; then
     if [[ -z "${MODE:-}" ]]; then
+      local has_manage=0
+      local existing_count
+      existing_count="$(list_existing_configs | awk 'NF{c++} END{print c+0}')"
+      [[ "$existing_count" -gt 0 ]] && has_manage=1
+
       log "Choose mode:"
       echo "  1) Iran Client     (client.yaml + forward + run in screen)"
       echo "  2) Kharej Server   (server.yaml + run in screen)"
+      [[ "$has_manage" -eq 1 ]] && echo "  3) Manage existing configs (view/edit server/client YAML)"
       echo
       local choice
-      prompt choice "Enter 1 or 2" "1"
-      [[ "$choice" == "1" ]] && MODE="client" || MODE="server"
+      prompt choice "Enter choice" "1"
+      case "$choice" in
+        1) MODE="client" ;;
+        2) MODE="server" ;;
+        3)
+          [[ "$has_manage" -eq 1 ]] || die "No configs found for management."
+          MODE="manage"
+          ;;
+        *) die "Invalid selection." ;;
+      esac
+    fi
+
+    if [[ "${MODE}" == "manage" ]]; then
+      manage_existing_configs
+      ok "Manage mode completed."
+      exit 0
     fi
 
     [[ -n "${SECRET:-}" ]] || prompt SECRET "Secret key (must match both sides)" "change-me-please"
