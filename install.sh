@@ -98,6 +98,20 @@ prompt() {
   printf -v "$__var" "%s" "$__val"
 }
 
+normalize_digits() {
+  local s="$1"
+  printf '%s' "$s" | tr '۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩' '01234567890123456789'
+}
+
+sanitize_choice() {
+  local s="$1"
+  s="$(normalize_digits "$s")"
+  s="${s//$'\r'/}"
+  s="${s//$'\t'/}"
+  s="${s// /}"
+  printf '%s' "$s"
+}
+
 ensure_unique_value() {
   local value="$1" label="$2" list="$3"
   local item
@@ -713,8 +727,33 @@ set_forward_listen_target_client() {
   sed -i -E "s#(^[[:space:]]*target:[[:space:]]*\")[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+(\".*)#\1${outside_ip}:${service_port}\2#" "$file"
 }
 
+ensure_client_pcap_block() {
+  local file="$1"
+  perl -0777 -i -pe '
+    s/^([ \t]*)#\s*pcap:\s*$/\1pcap:/mg;
+    s/^([ \t]*)#\s*sockbuf:\s*([0-9]+.*)$/\1sockbuf: \2/mg;
+  ' "$file"
+
+  if ! awk '/^[[:space:]]*pcap:[[:space:]]*$/{f=1} END{exit !f}' "$file"; then
+    awk '
+      {print}
+      /^[[:space:]]*tcp:[[:space:]]*$/ && !done {
+        print ""
+        print "  pcap:"
+        print "    sockbuf: 4194304"
+        done=1
+      }
+    ' "$file" > "${file}.tmp" && mv "${file}.tmp" "$file"
+  fi
+}
+
 # ===== screen runner =====
 screen_exists() { local name="$1"; screen -ls 2>/dev/null | grep -q "[[:space:]]${name}[[:space:]]"; }
+
+latest_screen_session() {
+  local name="$1"
+  screen -ls 2>/dev/null | awk -v n=".${name}" '$1 ~ n"$" {print $1}' | tail -n1
+}
 
 start_in_screen() {
   local mode="$1" cfg="$2" screen_name="$3"
@@ -865,6 +904,7 @@ main() {
       echo
       local choice
       prompt choice "Enter choice" "1"
+      choice="$(sanitize_choice "$choice")"
       case "$choice" in
         1) MODE="client" ;;
         2) MODE="server" ;;
@@ -1004,7 +1044,13 @@ main() {
     log "Watchdog log: $LOG_WATCHDOG"
     if has_tty && [[ "${AUTO_ATTACH}" == "1" ]]; then
       log "Auto-attaching to screen session: ${SCREEN_NAME}"
-      screen -r "${SCREEN_NAME}" || screen -d -r "${SCREEN_NAME}" || true
+      local sid
+      sid="$(latest_screen_session "${SCREEN_NAME}")"
+      if [[ -n "$sid" ]]; then
+        screen -r "$sid" || screen -d -r "$sid" || true
+      else
+        screen -r "${SCREEN_NAME}" || screen -d -r "${SCREEN_NAME}" || true
+      fi
     fi
     exit 0
   fi
@@ -1057,6 +1103,7 @@ main() {
     set_client_ipv4_addr_local "$client_yaml_i" "$lip_final"
     set_router_mac_all_occurrences "$client_yaml_i" "$gw_mac"
     set_mtu_value "$client_yaml_i" "${best_mtu:-1350}"
+    ensure_client_pcap_block "$client_yaml_i"
     [[ "$FORCE_IPV6_DISABLE" == "1" ]] && comment_ipv6_block_requested_style "$client_yaml_i"
     disable_socks5_enable_forward_client "$client_yaml_i"
     set_forward_listen_target_client "$client_yaml_i" "$service_port_i" "$outside_ip_i"
@@ -1076,7 +1123,13 @@ main() {
     log "Watchdog log: $LOG_WATCHDOG"
     if has_tty && [[ "${AUTO_ATTACH}" == "1" ]]; then
       log "Auto-attaching to screen session: ${screen_name_i}"
-      screen -r "${screen_name_i}" || screen -d -r "${screen_name_i}" || true
+      local sid_i
+      sid_i="$(latest_screen_session "${screen_name_i}")"
+      if [[ -n "$sid_i" ]]; then
+        screen -r "$sid_i" || screen -d -r "$sid_i" || true
+      else
+        screen -r "${screen_name_i}" || screen -d -r "${screen_name_i}" || true
+      fi
     fi
   done
 }
