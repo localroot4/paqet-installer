@@ -227,23 +227,26 @@ show_config_details() {
 
   echo "Profile      : ${friendly}"
   if [[ "$role" == "client" ]]; then
-    echo "Role         : IRAN(client)"
-    [[ -n "$server_addr" ]] && echo "IPV4 Kharej  : $server_addr"
-    [[ -n "$ipv4_addr" ]] && echo "Iran (local) : $ipv4_addr"
-    [[ -n "$forward_listen" ]] && echo "Service port : $forward_listen"
+    [[ -n "$server_addr" ]] && echo "1) IPV4 Kharej  : $server_addr"
+    [[ -n "$ipv4_addr" ]] && echo "2) Iran (local) : $ipv4_addr"
+    [[ -n "$forward_listen" ]] && echo "3) Service port : $forward_listen"
+    [[ -n "$mtu" ]] && echo "4) KCP MTU      : ${mtu}"
+    [[ -n "$key" ]] && echo "5) Secret key   : ${key}"
   elif [[ "$role" == "server" ]]; then
-    echo "Role         : KHAREJ(server)"
-    [[ -n "$listen_addr" ]] && echo "Tunnel port  : $listen_addr"
-    [[ -n "$ipv4_addr" ]] && echo "Kharej IPv4  : $ipv4_addr"
+    [[ -n "$ipv4_addr" ]] && echo "1) IPV4 Kharej  : $ipv4_addr"
+    [[ -n "$listen_addr" ]] && echo "2) Tunnel port  : $listen_addr"
+    [[ -n "$mtu" ]] && echo "4) KCP MTU      : ${mtu}"
+    [[ -n "$key" ]] && echo "5) Secret key   : ${key}"
   else
     echo "Role         : ${role:-unknown}"
-    [[ -n "$listen_addr" ]] && echo "Listen addr  : $listen_addr"
-    [[ -n "$server_addr" ]] && echo "Server addr  : $server_addr"
-    [[ -n "$ipv4_addr" ]] && echo "IPv4 addr    : $ipv4_addr"
-    [[ -n "$forward_listen" ]] && echo "Service port : $forward_listen"
+    [[ -n "$listen_addr" ]] && echo "1) Listen addr  : $listen_addr"
+    [[ -n "$server_addr" ]] && echo "1) Server addr  : $server_addr"
+    [[ -n "$ipv4_addr" ]] && echo "2) IPv4 addr    : $ipv4_addr"
+    [[ -n "$forward_listen" ]] && echo "3) Service port : $forward_listen"
+    [[ -n "$mtu" ]] && echo "4) KCP MTU      : ${mtu}"
+    [[ -n "$key" ]] && echo "5) Secret key   : ${key}"
   fi
-  [[ -n "$mtu" ]] && echo "KCP MTU      : ${mtu}"
-  [[ -n "$key" ]] && echo "Secret key   : ${key}"
+  echo "6) Back"
 }
 
 manage_single_config() {
@@ -256,12 +259,6 @@ manage_single_config() {
     echo "Manage: $(friendly_config_name "$file")"
     show_config_details "$file"
     echo
-    echo "  1) Edit outside/server IP"
-    echo "  2) Edit tunnel port"
-    echo "  3) Edit service port (client forward)"
-    echo "  4) Edit MTU"
-    echo "  5) Edit secret key"
-    echo "  6) Back"
     local act
     prompt act "Choose action" "6"
     case "$act" in
@@ -713,6 +710,7 @@ set_forward_listen_target_client() {
   local file="$1" service_port="$2" outside_ip="$3"
   sed -i "s/\"127\.0\.0\.1:8080\"/\"0.0.0.0:${service_port}\"/" "$file"
   sed -i "s/\"127\.0\.0\.1:80\"/\"${outside_ip}:${service_port}\"/" "$file"
+  sed -i -E "s#(^[[:space:]]*target:[[:space:]]*\")[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+(\".*)#\1${outside_ip}:${service_port}\2#" "$file"
 }
 
 # ===== screen runner =====
