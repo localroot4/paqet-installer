@@ -735,6 +735,11 @@ latest_screen_session() {
   screen -ls 2>/dev/null | awk -v n=".${name}" '$1 ~ n"$" {print $1}' | tail -n1
 }
 
+latest_detached_screen_session() {
+  local name="$1"
+  screen -ls 2>/dev/null | awk -v n=".${name}" '$1 ~ n"$" && /\(Detached\)/ {print $1}' | tail -n1
+}
+
 start_in_screen() {
   local mode="$1" cfg="$2" screen_name="$3"
   screen -wipe >/dev/null 2>&1 || true
@@ -1024,12 +1029,17 @@ main() {
     log "Watchdog log: $LOG_WATCHDOG"
     if has_tty && [[ "${AUTO_ATTACH}" == "1" ]]; then
       log "Auto-attaching to screen session: ${SCREEN_NAME}"
-      local sid
-      sid="$(latest_screen_session "${SCREEN_NAME}")"
-      if [[ -n "$sid" ]]; then
-        screen -r "$sid" || screen -d -r "$sid" || true
+      if [[ -n "${STY:-}" ]]; then
+        warn "Already inside a screen session (STY=${STY}); skipping auto-attach to avoid nested screen issues."
       else
-        screen -r "${SCREEN_NAME}" || screen -d -r "${SCREEN_NAME}" || true
+      local sid
+      sid="$(latest_detached_screen_session "${SCREEN_NAME}")"
+      [[ -n "$sid" ]] || sid="$(latest_screen_session "${SCREEN_NAME}")"
+      if [[ -n "$sid" ]]; then
+        screen -r "$sid" || screen -d -r "$sid" || screen -x "$sid" || true
+      else
+        screen -r "${SCREEN_NAME}" || screen -d -r "${SCREEN_NAME}" || screen -x "${SCREEN_NAME}" || true
+      fi
       fi
     fi
     exit 0
@@ -1102,12 +1112,17 @@ main() {
     log "Watchdog log: $LOG_WATCHDOG"
     if has_tty && [[ "${AUTO_ATTACH}" == "1" ]]; then
       log "Auto-attaching to screen session: ${screen_name_i}"
-      local sid_i
-      sid_i="$(latest_screen_session "${screen_name_i}")"
-      if [[ -n "$sid_i" ]]; then
-        screen -r "$sid_i" || screen -d -r "$sid_i" || true
+      if [[ -n "${STY:-}" ]]; then
+        warn "Already inside a screen session (STY=${STY}); skipping auto-attach to avoid nested screen issues."
       else
-        screen -r "${screen_name_i}" || screen -d -r "${screen_name_i}" || true
+      local sid_i
+      sid_i="$(latest_detached_screen_session "${screen_name_i}")"
+      [[ -n "$sid_i" ]] || sid_i="$(latest_screen_session "${screen_name_i}")"
+      if [[ -n "$sid_i" ]]; then
+        screen -r "$sid_i" || screen -d -r "$sid_i" || screen -x "$sid_i" || true
+      else
+        screen -r "${screen_name_i}" || screen -d -r "${screen_name_i}" || screen -x "${screen_name_i}" || true
+      fi
       fi
     fi
   done
