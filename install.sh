@@ -297,6 +297,7 @@ manage_single_config() {
           local cur_ipv4="$(get_addr_in_section "$file" "ipv4")"
           set_server_listen_port "$file" "$ntp"
           set_server_ipv4_addr_public "$file" "$(get_addr_host "$cur_ipv4")" "$ntp"
+          set_ipv6_port_if_enabled "$file" "$ntp"
         else
           local cur_srv2="$(get_addr_in_section "$file" "server")"
           set_client_server_addr "$file" "$(get_addr_host "$cur_srv2")" "$ntp"
@@ -683,6 +684,27 @@ set_server_ipv4_addr_public() {
   perl -0777 -i -pe "s/(ipv4:\\n\\s+addr: )\"[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+:[0-9]+\"/\\1\"${ip}:${port}\"/s" "$file"
 }
 
+set_ipv6_port_if_enabled() {
+  local file="$1" port="$2"
+  awk -v p="$port" '
+    BEGIN{in6=0}
+    {
+      line=$0
+      if (line ~ /^[[:space:]]*#?[[:space:]]*ipv6:[[:space:]]*$/) {
+        if (line ~ /^[[:space:]]*#/) in6=0; else in6=1
+      } else if (in6 && line ~ /^[^[:space:]]/) {
+        in6=0
+      }
+
+      if (in6 && line ~ /^[[:space:]]*addr:[[:space:]]*"\[[^]]+\]:[0-9]+"/) {
+        sub(/:[0-9]+"/, ":" p "\"", line)
+      }
+
+      print line
+    }
+  ' "$file" > "${file}.tmp" && mv "${file}.tmp" "$file"
+}
+
 set_secret_key() {
   local file="$1" secret="$2"
   sed -i "s/^\([[:space:]]*key:[[:space:]]*\)\"[^\"]*\"/\1\"${secret}\"/" "$file"
@@ -733,6 +755,11 @@ screen_exists() { local name="$1"; screen -ls 2>/dev/null | grep -q "[[:space:]]
 latest_screen_session() {
   local name="$1"
   screen -ls 2>/dev/null | awk -v n=".${name}" '$1 ~ n"$" {print $1}' | tail -n1
+}
+
+latest_detached_screen_session() {
+  local name="$1"
+  screen -ls 2>/dev/null | awk -v n=".${name}" '$1 ~ n"$" && /\(Detached\)/ {print $1}' | tail -n1
 }
 
 start_in_screen() {
@@ -1006,6 +1033,7 @@ main() {
     set_interface_line "$SERVER_YAML" "$iface"
     set_server_listen_port "$SERVER_YAML" "$TUNNEL_PORT"
     set_server_ipv4_addr_public "$SERVER_YAML" "$ip_final" "$TUNNEL_PORT"
+    set_ipv6_port_if_enabled "$SERVER_YAML" "$TUNNEL_PORT"
     set_router_mac_all_occurrences "$SERVER_YAML" "$gw_mac"
     set_mtu_value "$SERVER_YAML" "${best_mtu:-1350}"
     [[ "$FORCE_IPV6_DISABLE" == "1" ]] && comment_ipv6_block_requested_style "$SERVER_YAML"
@@ -1024,12 +1052,17 @@ main() {
     log "Watchdog log: $LOG_WATCHDOG"
     if has_tty && [[ "${AUTO_ATTACH}" == "1" ]]; then
       log "Auto-attaching to screen session: ${SCREEN_NAME}"
-      local sid
-      sid="$(latest_screen_session "${SCREEN_NAME}")"
-      if [[ -n "$sid" ]]; then
-        screen -r "$sid" || screen -d -r "$sid" || true
+      if [[ -n "${STY:-}" ]]; then
+        warn "Already inside a screen session (STY=${STY}); skipping auto-attach to avoid nested screen issues."
       else
-        screen -r "${SCREEN_NAME}" || screen -d -r "${SCREEN_NAME}" || true
+      local sid
+      sid="$(latest_detached_screen_session "${SCREEN_NAME}")"
+      [[ -n "$sid" ]] || sid="$(latest_screen_session "${SCREEN_NAME}")"
+      if [[ -n "$sid" ]]; then
+        screen -r "$sid" || screen -d -r "$sid" || screen -x "$sid" || true
+      else
+        screen -r "${SCREEN_NAME}" || screen -d -r "${SCREEN_NAME}" || screen -x "${SCREEN_NAME}" || true
+      fi
       fi
     fi
     exit 0
@@ -1102,12 +1135,17 @@ main() {
     log "Watchdog log: $LOG_WATCHDOG"
     if has_tty && [[ "${AUTO_ATTACH}" == "1" ]]; then
       log "Auto-attaching to screen session: ${screen_name_i}"
-      local sid_i
-      sid_i="$(latest_screen_session "${screen_name_i}")"
-      if [[ -n "$sid_i" ]]; then
-        screen -r "$sid_i" || screen -d -r "$sid_i" || true
+      if [[ -n "${STY:-}" ]]; then
+        warn "Already inside a screen session (STY=${STY}); skipping auto-attach to avoid nested screen issues."
       else
-        screen -r "${screen_name_i}" || screen -d -r "${screen_name_i}" || true
+      local sid_i
+      sid_i="$(latest_detached_screen_session "${screen_name_i}")"
+      [[ -n "$sid_i" ]] || sid_i="$(latest_screen_session "${screen_name_i}")"
+      if [[ -n "$sid_i" ]]; then
+        screen -r "$sid_i" || screen -d -r "$sid_i" || screen -x "$sid_i" || true
+      else
+        screen -r "${screen_name_i}" || screen -d -r "${screen_name_i}" || screen -x "${screen_name_i}" || true
+      fi
       fi
     fi
   done
