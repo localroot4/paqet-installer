@@ -32,7 +32,7 @@ set -Eeuo pipefail
 : "${CLIENT_START_INDEX:=}"
 : "${WATCHDOG:=1}"
 : "${WATCHDOG_METHOD:=auto}"  # auto | cron | systemd
-: "${FORCE_IPV6_DISABLE:=0}"
+: "${FORCE_IPV6_DISABLE:=1}"
 
 # ===== Paths =====
 ROOT_DIR="/root"
@@ -666,9 +666,9 @@ set_router_mac_all_occurrences() {
 comment_ipv6_block_requested_style() {
   local file="$1"
   perl -i -pe '
-    if (/^\s*ipv6:/) { $in=1; s/^(\s*)ipv6:/$1#ipv6:/; next; }
-    if ($in && /^\s*addr:/) { s/^(\s*)addr:/$1#addr:/; next; }
-    if ($in && /^\s*router_mac:/) { s/^(\s*)router_mac:/$1#router_mac:/; $in=0; next; }
+    if (/^\s*ipv6:/) { $in=1; s/^(\s*)ipv6:/$1# ipv6:/; next; }
+    if ($in && /^\s*addr:/) { s/^(\s*)addr:/$1#   addr:/; next; }
+    if ($in && /^\s*router_mac:/) { s/^(\s*)router_mac:/$1#   router_mac:/; $in=0; next; }
     if ($in && /^\s*\S/ && !/^\s*#/) { $in=0; }
   ' "$file"
 }
@@ -1053,7 +1053,7 @@ main() {
     if has_tty && [[ "${AUTO_ATTACH}" == "1" ]]; then
       log "Auto-attaching to screen session: ${SCREEN_NAME}"
       if [[ -n "${STY:-}" ]]; then
-        warn "Already inside a screen session (STY=${STY}); skipping auto-attach to avoid nested screen issues."
+        log "Already inside a screen session (STY=${STY}); skip auto-attach."
       else
       local sid
       sid="$(latest_detached_screen_session "${SCREEN_NAME}")"
@@ -1136,7 +1136,7 @@ main() {
     if has_tty && [[ "${AUTO_ATTACH}" == "1" ]]; then
       log "Auto-attaching to screen session: ${screen_name_i}"
       if [[ -n "${STY:-}" ]]; then
-        warn "Already inside a screen session (STY=${STY}); skipping auto-attach to avoid nested screen issues."
+        log "Already inside a screen session (STY=${STY}); skip auto-attach."
       else
       local sid_i
       sid_i="$(latest_detached_screen_session "${screen_name_i}")"
