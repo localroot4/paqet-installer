@@ -160,13 +160,13 @@ get_addr_in_section() {
   local file="$1" section="$2"
   awk -v section="$section" '
     $0 ~ "^[[:space:]]*" section ":[[:space:]]*$" {in_sec=1; next}
-    in_sec && $0 ~ "^[[:space:]]*[A-Za-z_]+:[[:space:]]*$" {in_sec=0}
-    in_sec && $0 ~ /addr:[[:space:]]*"/ {
-      if (match($0, /"[^"]+"/)) {
-        val=substr($0, RSTART+1, RLENGTH-2)
-        print val
-        exit
-      }
+    in_sec && /^[^[:space:]]/ {in_sec=0}
+    in_sec && $0 ~ /^[[:space:]]*addr:[[:space:]]*"/ {
+      line=$0
+      sub(/^[[:space:]]*addr:[[:space:]]*"/, "", line)
+      sub(/".*/, "", line)
+      print line
+      exit
     }
   ' "$file" 2>/dev/null || true
 }
@@ -175,13 +175,13 @@ get_forward_listen() {
   local file="$1"
   awk '
     $0 ~ "^[[:space:]]*forward:[[:space:]]*$" {in_fwd=1; next}
-    in_fwd && $0 ~ "^[[:space:]]*[A-Za-z_]+:[[:space:]]*$" {in_fwd=0}
+    in_fwd && /^[^[:space:]]/ {in_fwd=0}
     in_fwd && $0 ~ /listen:[[:space:]]*"/ {
-      if (match($0, /"[^"]+"/)) {
-        val=substr($0, RSTART+1, RLENGTH-2)
-        print val
-        exit
-      }
+      line=$0
+      sub(/^.*listen:[[:space:]]*"/, "", line)
+      sub(/".*/, "", line)
+      print line
+      exit
     }
   ' "$file" 2>/dev/null || true
 }
@@ -190,7 +190,7 @@ get_kcp_scalar() {
   local file="$1" key="$2"
   awk -v key="$key" '
     $0 ~ "^[[:space:]]*kcp:[[:space:]]*$" {in_kcp=1; next}
-    in_kcp && $0 ~ "^[[:space:]]*[A-Za-z_]+:[[:space:]]*$" && $0 !~ "^[[:space:]]*" key ":[[:space:]]*" {if ($0 !~ /^[[:space:]]+/) in_kcp=0}
+    in_kcp && /^[^[:space:]]/ {in_kcp=0}
     in_kcp && $0 ~ "^[[:space:]]*" key ":[[:space:]]*" {
       line=$0
       sub(/^[[:space:]]*[^:]+:[[:space:]]*/, "", line)
