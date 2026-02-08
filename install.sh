@@ -15,7 +15,7 @@ set -Eeuo pipefail
 ############################################
 
 # ===== Hard init (prevents "unbound variable" with set -u) =====
-: "${PAQET_VERSION:=v1.0.0-alpha.15}"
+: "${PAQET_VERSION:=v1.0.0-alpha.11}"
 : "${MODE:=}"            # server | client
 : "${TUNNEL_PORT:=}"
 : "${SERVICE_PORT:=}"
@@ -274,8 +274,8 @@ get_gateway_mac() {
 
 # ===== Download logic =====
 download_with_retry() {
-  local url="$1" out="$2"
-  local tries=5 wait=2
+  local url="$1" out="$2" tries="${3:-5}"
+  local wait=2
   for i in $(seq 1 $tries); do
     loge "Downloading ($i/$tries): $url"
     if wget -q --show-progress --timeout=20 --tries=2 "$url" -O "$out"; then
@@ -312,10 +312,12 @@ download_release_tarball() {
   fi
 
   local out=""
-  local mirror_base="http://atil.ir/files"
+  local mirror_gigo="http://gigo.host/files"
+  local mirror_atil="http://atil.ir/files"
   for name in "${candidates[@]}"; do
     local url="${RELEASE_BASE}/${name}"
-    local mirror_url="${mirror_base}/${name}"
+    local mirror_gigo_url="${mirror_gigo}/${name}"
+    local mirror_atil_url="${mirror_atil}/${name}"
     out="${ROOT_DIR}/${name}"
     if [[ -f "$out" ]]; then
       if tar -tzf "$out" >/dev/null 2>&1; then
@@ -326,7 +328,7 @@ download_release_tarball() {
       warne "Corrupt tarball detected, removing: $out"
       rm -f "$out"
     fi
-    if download_with_retry "$mirror_url" "$out"; then
+    if download_with_retry "$mirror_gigo_url" "$out" 1; then
       if ! tar -tzf "$out" >/dev/null 2>&1; then
         warne "Downloaded tarball is corrupt. Removing and retrying..."
         rm -f "$out"
@@ -335,7 +337,7 @@ download_release_tarball() {
         return 0
       fi
     fi
-    if download_with_retry "$mirror_url" "$out"; then
+    if download_with_retry "$mirror_atil_url" "$out" 1; then
       if ! tar -tzf "$out" >/dev/null 2>&1; then
         warne "Downloaded tarball is corrupt. Removing and retrying..."
         rm -f "$out"
@@ -356,6 +358,28 @@ download_release_tarball() {
   done
 
   die "Could not download tarball for ARCH=${ARCH}. Check release assets or set PAQET_VERSION."
+}
+
+detect_best_mtu() {
+  local iface="$1"
+  local gw="$2"
+  local base_mtu=""
+  base_mtu="$(ip link show dev "$iface" 2>/dev/null | awk '/mtu/ {for(i=1;i<=NF;i++) if($i=="mtu") {print $(i+1); exit}}')"
+  [[ -n "$base_mtu" ]] || base_mtu=1500
+
+  local m
+  for m in 1472 1464 1452 1440 1420 1412 1400 1380 1360 1350 1320 1300; do
+    if ping -c 1 -W 1 -M do -s "$m" "$gw" >/dev/null 2>&1; then
+      echo $((m + 28))
+      return 0
+    fi
+  done
+
+  if [[ "$base_mtu" -gt 1500 ]]; then
+    echo 1500
+  else
+    echo "$base_mtu"
+  fi
 }
 
 extract_and_prepare_binary() {
@@ -460,6 +484,11 @@ set_client_server_addr() {
   perl -0777 -i -pe "s/(server:\\n\\s+addr: )\"[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+:[0-9]+\"/\\1\"${outside_ip}:${tunnel_port}\"/s" "$file"
 }
 
+set_mtu_value() {
+  local file="$1" mtu="$2"
+  sed -i -E "s/^([[:space:]]*mtu:[[:space:]]*)[0-9]+/\1${mtu}/" "$file"
+}
+
 set_forward_listen_target_client() {
   local file="$1" service_port="$2" outside_ip="$3"
   sed -i "s/\"127\.0\.0\.1:8080\"/\"0.0.0.0:${service_port}\"/" "$file"
@@ -558,10 +587,10 @@ EOF
 
   cat > "/etc/systemd/system/${unit}.timer" <<EOF
 [Unit]
-Description=Run Paqet Watchdog every 1 minute (${screen_name})
+Description=Run Paqet Watchdog every 5 minutes (${screen_name})
 [Timer]
 OnBootSec=30
-OnUnitActiveSec=60
+OnUnitActiveSec=300
 AccuracySec=5
 [Install]
 WantedBy=timers.target
@@ -574,9 +603,9 @@ EOF
 
 install_watchdog_cron() {
   local cfg="$1" screen_name="$2"
-  local line="* * * * * ${WATCHDOG_SH} ${MODE} ${screen_name} ${BIN_LOCAL} ${cfg} ${LOG_RUNTIME} ${LOG_WATCHDOG}"
+  local line="*/5 * * * * ${WATCHDOG_SH} ${MODE} ${screen_name} ${BIN_LOCAL} ${cfg} ${LOG_RUNTIME} ${LOG_WATCHDOG}"
   ( crontab -l 2>/dev/null | grep -v "${WATCHDOG_SH} ${MODE} ${screen_name}" || true; echo "$line" ) | crontab -
-  ok "Watchdog enabled via cron (every 1 minute) for ${screen_name}."
+  ok "Watchdog enabled via cron (every 5 minutes) for ${screen_name}."
 }
 
 install_watchdog() {
@@ -607,12 +636,12 @@ main() {
   if ! is_pipe_mode; then
     if [[ -z "${MODE:-}" ]]; then
       log "Choose mode:"
-      echo "  1) Outside Server  (server.yaml + run in screen)"
-      echo "  2) Iran Client     (client.yaml + forward + run in screen)"
+      echo "  1) Iran Client     (client.yaml + forward + run in screen)"
+      echo "  2) Kharej Server   (server.yaml + run in screen)"
       echo
       local choice
       prompt choice "Enter 1 or 2" "1"
-      [[ "$choice" == "1" ]] && MODE="server" || MODE="client"
+      [[ "$choice" == "1" ]] && MODE="client" || MODE="server"
     fi
 
     [[ -n "${SECRET:-}" ]] || prompt SECRET "Secret key (must match both sides)" "change-me-please"
@@ -695,6 +724,8 @@ main() {
   gw_mac="$(get_gateway_mac "$gw" || true)"
   local_ip="$(get_local_ipv4 "$iface" || true)"
   public_ip="$(get_public_ipv4 || true)"
+  local best_mtu
+  best_mtu="$(detect_best_mtu "$iface" "$gw")"
 
   log "Detected:"
   log "  interface  = ${iface}"
@@ -702,6 +733,7 @@ main() {
   log "  gatewayMAC = ${gw_mac:-UNKNOWN}"
   log "  localIPv4  = ${local_ip:-UNKNOWN}"
   log "  publicIPv4 = ${public_ip:-UNKNOWN}"
+  log "  mtu(best)  = ${best_mtu:-1350}"
   [[ -n "$gw_mac" ]] || die "Gateway MAC not detected automatically."
 
   if [[ "$MODE" == "server" ]]; then
@@ -717,6 +749,7 @@ main() {
     set_server_listen_port "$SERVER_YAML" "$TUNNEL_PORT"
     set_server_ipv4_addr_public "$SERVER_YAML" "$ip_final" "$TUNNEL_PORT"
     set_router_mac_all_occurrences "$SERVER_YAML" "$gw_mac"
+    set_mtu_value "$SERVER_YAML" "${best_mtu:-1350}"
     [[ "$FORCE_IPV6_DISABLE" == "1" ]] && comment_ipv6_block_requested_style "$SERVER_YAML"
     set_secret_key "$SERVER_YAML" "$SECRET"
     ok "server.yaml ready."
@@ -785,6 +818,7 @@ main() {
     set_interface_line "$client_yaml_i" "$iface"
     set_client_ipv4_addr_local "$client_yaml_i" "$lip_final"
     set_router_mac_all_occurrences "$client_yaml_i" "$gw_mac"
+    set_mtu_value "$client_yaml_i" "${best_mtu:-1350}"
     [[ "$FORCE_IPV6_DISABLE" == "1" ]] && comment_ipv6_block_requested_style "$client_yaml_i"
     disable_socks5_enable_forward_client "$client_yaml_i"
     set_forward_listen_target_client "$client_yaml_i" "$service_port_i" "$outside_ip_i"
