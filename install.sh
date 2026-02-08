@@ -584,15 +584,17 @@ detect_best_mtu() {
   [[ -n "$base_mtu" ]] || base_mtu=1500
 
   local m
-  for m in 1472 1464 1452 1440 1420 1412 1400 1380 1360 1350 1320 1300; do
+  for m in 1322 1320 1312 1300 1280 1260 1240; do
     if ping -c 1 -W 1 -M do -s "$m" "$gw" >/dev/null 2>&1; then
-      echo $((m + 28))
+      local detected=$((m + 28))
+      [[ "$detected" -gt 1350 ]] && detected=1350
+      echo "$detected"
       return 0
     fi
   done
 
-  if [[ "$base_mtu" -gt 1500 ]]; then
-    echo 1500
+  if [[ "$base_mtu" -gt 1350 ]]; then
+    echo 1350
   else
     echo "$base_mtu"
   fi
@@ -702,6 +704,8 @@ set_client_server_addr() {
 
 set_mtu_value() {
   local file="$1" mtu="$2"
+  [[ "$mtu" =~ ^[0-9]+$ ]] || mtu=1350
+  [[ "$mtu" -gt 1350 ]] && mtu=1350
   sed -i -E "s/^([[:space:]]*mtu:[[:space:]]*)[0-9]+/\1${mtu}/" "$file"
 }
 
